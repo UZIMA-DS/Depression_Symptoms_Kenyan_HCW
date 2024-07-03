@@ -1,0 +1,679 @@
+library (DBI)
+library (odbc)
+
+library(vctrs)
+library(tidyverse)
+library(tidyquant)
+library(ggplot2)
+library(ggthemes)
+library(naniar)
+library(janitor)
+library(tibble)
+library(plotly)
+library(dygraphs)
+library(rstatix)
+library(gridExtra)
+library(grid)
+library(png)
+
+
+
+# creates database entry point
+con <- dbConnect(odbc::odbc(), dsn="Uzima")
+
+# fetching tables from dbo schema
+dbListTables(con, schema ="dbo")
+dbListTables(con, schema = "DW")
+
+
+## DRY RUN TEST
+q1_survey <- dbReadTable(con, "Quarter1Survey")
+dim(q1_survey)
+# - [1] 34009     5
+
+### Daily Data
+daily_data <- dbReadTable(con, "FactFitBitDailyData")
+dim(daily_data)
+# - Error: nanodbc/nanodbc.cpp:1710: 21S02
+
+
+survey_results <- dbReadTable(con, "DimSurveyResults")
+names(survey_results)
+
+## Activity logs
+activity_logs <- dbReadTable(con, "FactFitBitActivitiesLogs")
+dim(activity_logs)
+# - [1] 36111    38
+
+sleep_log <- dbReadTable(con, "FactFitBitSleepLog")
+dim(sleep_log)
+# -66637 23
+
+
+# analysis on FactFitBitSleepLog
+names(sleep_log)
+sleep_log <- clean_names(sleep_log)
+
+columns  <- c('participant_identifier','start_date','efficiency','minutes_asleep',
+              'sleep_level_light','sleep_level_deep','sleep_level_rem')
+sleep_minutes <- sleep_log[, columns, drop =FALSE]
+
+
+
+## Sleep data analysis
+## Data Viz
+sleep_minutes %>%
+  ggplot(aes(start_date,minutes_asleep))+
+  geom_line()+
+  labs(title="Minutes asleep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+## clean data
+# - drop duplicates
+sleep_cleaning <- sleep_minutes %>% distinct()
+
+sleep_cleaning$start_date <- as.Date(sleep_cleaning$start_date)
+
+sleep_cleaning <- sleep_cleaning %>% arrange(start_date)
+
+# plot with simple moving average
+# sleep minutes asleep
+sleep_cleaning %>%
+  ggplot(aes(start_date,minutes_asleep))+
+  geom_line()+
+  geom_ma(ma_fun = SMA, n = 30)+
+  labs(title="Moving average of Minutes asleep",
+       subtitle='(window n=30)',
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+######## extract only average
+avg_sleep<-sleep_cleaning %>%
+  group_by(start_date) %>%
+  summarise(avg_sleep = mean(minutes_asleep))
+
+avg_sleep %>%
+  ggplot(aes(start_date,avg_sleep))+
+  geom_line()+
+  labs(title="Average of Minutes asleep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(avg_sleep$avg_sleep)
+avg_sleep_summary <- get_summary_stats(avg_sleep)
+library(gridExtra)
+library(grid)
+library(png)
+
+avg_summary_table <- tableGrob(avg_sleep_summary)
+png("summary.png", 600, 400)
+grid.draw(avg_summary_table)
+dev.off()
+
+
+
+################################## sleep in 2023 to cover for Quarter 1 and 2
+### filtering sleep 2023 and based on the filtered list
+
+
+sleep_2023 <- sleep_cleaning %>%
+  filter(start_date >= "2023-07-01" & start_date <= "2023-12-31")
+# clean participant identifier
+sleep_2023 <- sleep_2023 %>%
+  rename(participantidentifier=participant_identifier)
+###### filter now with the 287 participants who appear in Quarter 1 and 2
+sleep_2023_filtered <- sleep_2023 %>% filter(participantidentifier %in% filtered)
+
+sleep_2023_filtered %>%
+  ggplot(aes(start_date,minutes_asleep))+
+  geom_line()+
+  geom_ma(ma_fun = SMA, n = 30)+
+  labs(title="Moving average of Minutes asleep",
+       subtitle='(window n=30)',
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+sleep_2023_filtered <- sleep_2023_filtered %>% arrange(participantidentifier)
+
+## extract only average
+avg_sleep_2023<-sleep_2023_filtered %>%
+  group_by(start_date) %>%
+  summarise(avg_sleep = mean(minutes_asleep))
+
+
+avg_sleep_2023 %>%
+  ggplot(aes(start_date,avg_sleep))+
+  geom_line()+
+  labs(title="Average of Minutes asleep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(avg_sleep_2023$avg_sleep)
+avg_sleep_summary <- get_summary_stats(avg_sleep_2023)
+library(gridExtra)
+library(grid)
+library(png)
+
+avg_summary_table <- tableGrob(avg_sleep_summary)
+png("Sleep_summary2023.png", 600, 400)
+grid.draw(avg_summary_table)
+dev.off()
+
+
+
+########################################################## mood data
+mood_log <- dbReadTable(con, "Mood")
+dim(mood_log)
+# 50670     5
+names(mood_log)
+
+# clean mood data
+mood_clean <- clean_names(mood_log)
+mood_clean <- mood_clean %>% distinct()
+mood_clean$start_date <- as.Date(mood_clean$start_date)
+mood_clean <- mood_clean %>% arrange(start_date)
+class(mood_clean$answers)
+mood_clean$answers <- as.numeric(mood_clean$answers)
+
+# plot with simple moving average
+# sleep minutes asleep
+mood_clean %>%
+  ggplot(aes(start_date,answers))+
+  geom_line()+
+  geom_ma(ma_fun = SMA, n = 30)+
+  labs(title="Moving average of Reported Mood",
+       subtitle='(window n=30)',
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+avg_mood_clean <- tableGrob(mood_clean)
+png("summary.png", 600, 400)
+grid.draw(avg_mood_clean)
+dev.off()
+
+## extract only average
+avg_mood <-mood_clean %>%
+  group_by(start_date) %>%
+  summarise(avg_mood = mean(answers))
+
+
+
+################################################################################ 
+# filtering mood 2023 and based on the filtered list
+
+######
+mood_2023 <- mood_clean %>%
+  filter(start_date >= "2023-07-01" & start_date <= "2023-12-31")
+mood_2023_filtered <- mood_2023 %>% filter(participantidentifier %in% filtered)
+
+mood_2023_filtered %>%
+  ggplot(aes(start_date,answers))+
+  geom_line()+
+  geom_ma(ma_fun = SMA, n = 30)+
+  labs(title="Moving average of Reported Mood",
+       subtitle='(window n=30)',
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+
+### average mood 2023 and based on filtered list
+
+## extract only avergae
+avg_mood_2023 <-mood_2023_filtered %>%
+  group_by(start_date) %>%
+  summarise(avg_mood = mean(answers))
+
+avg_mood_2023 %>%
+  ggplot(aes(start_date,avg_mood))+
+  geom_line()+
+  labs(title="Average of Mood",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(avg_mood_2023$avg_mood)
+avg_mood_summary <- get_summary_stats(avg_mood)
+library(gridExtra)
+library(grid)
+library(png)
+
+avg_summary_table <- tableGrob(avg_mood_summary)
+png("mood summary 2023.png", 600, 400)
+grid.draw(avg_summary_table)
+dev.off()
+
+
+
+
+
+
+################################################################### merge mood and sleep
+data_merged <- right_join(avg_sleep_2023, avg_mood_2023, by="start_date")
+data_merged$avg_mood <- as.numeric(data_merged$avg_mood)
+
+# visualize
+coeff <- 10
+data_merged %>%
+  ggplot(aes(x=start_date))+
+  geom_line(aes(y=avg_sleep))+ 
+  geom_line(aes(y=avg_mood*100))+
+  scale_y_continuous(
+    name="first axis",
+    sec.axis = sec_axis(~.*coeff,name="Second Axis")
+  )
+
+
+
+##################### when plotting using bars
+## change to data.table
+library(data.table)
+participant_mood_table <- as.data.table(participant_mood)
+participant_sleep_table <- as.data.table(participant_ordered)
+
+
+# set key
+setkey(participant_mood_table, start_date)
+setkey(participant_sleep_table, start_date)
+
+merged_table <- participant_sleep_table[participant_mood_table, roll=TRUE]
+merged_table[, answers:= as.numeric(answers)]
+
+merged_table %>%
+  ggplot(aes(x=start_date))+
+  geom_line(aes(y=duration))+ 
+  geom_line(aes(y=answers), color='red')+
+  scale_y_continuous(
+    name="first axis",
+    sec.axis = sec_axis(~.*coeff,name="Second Axis")
+  )
+
+### plot 2 charts instead
+library(patchwork)
+plot1 <- avg_sleep_2023 %>%
+  ggplot(aes(start_date,avg_sleep))+
+  geom_line()+
+  labs(title="Average of Minutes Asleep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+  
+plot2 <- avg_mood_2023 %>%
+  ggplot(aes(start_date,avg_mood))+
+  geom_line()+
+  labs(title="Average of Mood",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+plot1/plot2 + plot_annotation( title= "Sleep Mood 2023")
+
+
+
+
+
+
+
+
+
+################################################################################ 
+## Analyse Sleep and Depression based on Q1 n 2 Survey Participants
+
+
+## get participants from quarter two and merge with sleep
+# rename participant column
+# sleep_2023
+
+sleep_2023 <- sleep_2023 %>%
+  rename(participantidentifier=participant_identifier)
+
+sleep_q2 <- inner_join(q2_merged_cleaned, sleep_2023, by='participantidentifier')
+
+unique_values <- length(unique(sleep_q2$participantidentifier)) ## 278
+
+sleep_q2_filtered <- sleep_q2 %>% filter(participantidentifier %in% filtered) ## down to 247
+
+sleep_q2_filtered %>%
+  ggplot(aes(start_date,minutes_asleep))+
+  geom_line()+
+  labs(title="Minutes asleep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+######## plot similar to sleep_2023
+
+sleep_q2_viz <- sleep_q2_filtered %>%
+  group_by(resultidentifier) %>%
+  mutate(count=n()) %>%
+  ungroup()
+
+sleep_q2_answers_viz <- sleep_q2_viz %>% arrange(participantidentifier)
+
+
+## DATA VIZ
+# display
+sleep_q2_answers_viz %>%
+  ggplot(aes(resultidentifier,fill=answers))+
+  geom_bar(position="fill", col="black")
+ 
+sleep_q2_answers_viz$answers <- as.numeric(sleep_q2_answers_viz$answers)
+# converted to numeric
+#############################################################################
+# run this before next one to create a duplicate
+sleep_variables <-  sleep_q2_answers_viz
+
+#############################################################################
+columns_5 <- c('participantidentifier','answers','resultidentifier')
+sleep_q2_answers_viz <- sleep_q2_answers_viz[, columns_5, drop=FALSE]
+sleep_q2_answers_viz <- sleep_q2_answers_viz %>% distinct()
+
+is.null(sleep_q2_answers_viz$answers)
+
+# change data frame to wide
+sleep_q2_answers_wide <- sleep_q2_answers_viz %>%
+  pivot_wider(
+    id_cols = participantidentifier,
+    names_from = resultidentifier,
+    values_from = answers
+  )
+############################################################################
+#### 247 participants
+
+# add a total column
+sleep_q2_answers_widetotal <- sleep_q2_answers_wide %>%
+  rowwise() %>% 
+  mutate(total=sum(c_across(concentr:failure)))
+
+# Classify depression scores
+sleep_depression_scores <- sleep_q2_answers_widetotal %>%
+  mutate(score = case_when(
+    total <= 4 ~ "No depression",
+    total <= 9 ~ "Mild depression",
+    total <= 14 ~ "Moderate depression",
+    total <= 19 ~ "Moderately Severe depression",
+    TRUE ~ "Severe depression"
+  ))
+
+sleep_depression_scores %>%
+  ggplot(aes(score))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+count <- rep(1, times=247)
+sleep_depression_scores <- cbind(sleep_depression_scores,count)
+
+sleep_depression_scores_table <- sleep_depression_scores %>%
+  group_by(score) %>%
+  summarise(count_a = n()) %>%
+  mutate(percentage = count_a / sum(count) * 100)
+
+print(sleep_depression_scores_table)
+
+sleep_depression_table <- tableGrob(sleep_depression_scores_table)
+png("Quarter 1,2 depression 2023sleep.png", 600, 400)
+grid.draw(sleep_depression_table)
+dev.off()
+
+
+################################################################# SUICIDE
+suicide_data <- sleep_q2_answers_viz %>%
+  filter(str_detect(resultidentifier, "suic"))
+class(suicide_data$answers)
+
+count <- rep(1, times=247)
+suicide_data <- cbind(suicide_data,count)
+suicide_data %>%
+  ggplot(aes(answers, count))+
+  geom_col()
+
+suicide_scores_table <- suicide_data %>%
+  group_by(answers) %>%
+  summarise(count_a = n()) %>%
+  mutate(percentage = count_a / sum(count) * 100)
+
+print(suicide_scores_table)
+
+
+################################################## get those who selected 1 and 2
+
+suicide_ideation <- suicide_data %>%
+  filter(answers %in% c("1","2")) %>%
+  select(participantidentifier)
+
+suicide_ideation_list <- as.list(suicide_ideation$participantidentifier)
+
+## get their sleep pattern 22 people
+suicide_filtered <- sleep_q2 %>% filter(participantidentifier %in% suicide_ideation_list)
+unique_values <- length(unique(suicide_filtered$participantidentifier))
+
+suicide_filtered <- suicide_filtered %>% arrange(start_date)
+
+######################################################## get those who selected 0
+
+suicide_no_ideation <- suicide_data %>%
+  filter(answers == "0") %>%
+  select(participantidentifier)
+
+######### get a random of 22 participants who didn't report suicide symptoms
+suicide_no_ideation22 <- suicide_no_ideation %>%
+  sample_n(22)
+
+suicide_ideation22_list <- as.list(suicide_no_ideation22$participantidentifier)
+
+## get them in a table
+suicide22_filtered <- sleep_q2 %>% filter(participantidentifier %in% suicide_ideation22_list)
+unique_values <- length(unique(suicide22_filtered$participantidentifier))
+
+suicide22_filtered <- suicide22_filtered %>% arrange(start_date)
+
+
+################################################################# SUICIDE VIZ
+library(gghighlight)
+library(viridis)
+## Data Viz
+suicide22_filtered %>%
+  ggplot(aes(start_date,minutes_asleep, group = participantidentifier))+
+  geom_line()+
+  labs(title="Minutes asleep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+##### plot with highlights
+suicide_filtered %>%
+  ggplot(aes(start_date, minutes_asleep, colour = participantidentifier))+
+  geom_point()+
+  geom_line()+
+  scale_color_viridis(discrete=TRUE)+
+  gghighlight(max(minutes_asleep)> 300,
+              unhighlighted_params = list(linewidth = 0.3,
+                                          linetype = "dotted"),
+              use_direct_label = FALSE)+
+  theme(legend.position = "none")
+
+## extract only average
+suicide_sleep <-suicide_filtered %>%
+  group_by(start_date) %>%
+  summarise(avg_sleep_val = mean(minutes_asleep))
+
+suicide_sleep %>%
+  ggplot(aes(start_date,avg_sleep_val))+
+  geom_line()+
+  labs(title="Average sleep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(suicide_sleep$avg_sleep_val)
+suicide_sleep_summary <- get_summary_stats(suicide_sleep)
+library(gridExtra)
+library(grid)
+library(png)
+
+suicide_sleep_summary <- tableGrob(suicide_sleep_summary)
+png("Suicide_MinutesAsleep summary.png", 600, 400)
+grid.draw(suicide_sleep_summary)
+dev.off()
+
+
+
+
+######################################################## sleep level light 
+######################## suicide22
+######################## suicide
+
+## get sleep level light variable
+
+sleep_light <- suicide_filtered %>%
+  select(participantidentifier, start_date, sleep_level_light)
+
+### Drop null values
+sleep_light <- sleep_light %>%
+  filter(!is.na(sleep_level_light))
+
+## extract only average
+avg_sleep_light <- sleep_light %>%
+  group_by(start_date) %>%
+  summarise(avg_light = mean(sleep_level_light))
+
+
+avg_sleep_light %>%
+  ggplot(aes(start_date,avg_light))+
+  geom_line()+
+  labs(title="Average of Sleep Level Light",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(avg_sleep_light$avg_light)
+avg_sleeplight_summary <- get_summary_stats(avg_sleep_light)
+library(gridExtra)
+library(grid)
+library(png)
+
+avg_summary_table <- tableGrob(avg_sleeplight_summary)
+png("Sleeplight_summary.png", 600, 400)
+grid.draw(avg_summary_table)
+dev.off()
+
+
+##################################################################### efficiency
+
+
+sleep_efficiency <- suicide_filtered %>%
+  select(participantidentifier, start_date, efficiency)
+
+### Drop null values
+sleep_light <- sleep_light %>%
+  filter(!is.na(sleep_level_light))
+
+## extract only average
+avg_sleep_efficiency <- sleep_efficiency %>%
+  group_by(start_date) %>%
+  summarise(avg_efficiency = mean(efficiency
+                             ))
+avg_sleep_efficiency %>%
+  ggplot(aes(start_date,avg_efficiency))+
+  geom_line()+
+  labs(title="Average of Sleep Efficiency",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(avg_sleep_efficiency$avg_efficiency)
+avg_sleepefficiency_summary <- get_summary_stats(avg_sleep_efficiency)
+library(gridExtra)
+library(grid)
+library(png)
+
+avg_summary_table <- tableGrob(avg_sleepefficiency_summary)
+png("SleepEfficiency_summary.png", 600, 400)
+grid.draw(avg_summary_table)
+dev.off()
+
+##################################################################### REM
+
+sleep_rem <- suicide_filtered %>%
+  select(participantidentifier, start_date, sleep_level_rem)
+
+### Drop null values
+sleep_rem <- sleep_rem %>%
+  filter(!is.na(sleep_level_rem))
+
+## extract only average
+avg_sleep_rem <- sleep_rem %>%
+  group_by(start_date) %>%
+  summarise(avg_rem = mean(sleep_level_rem
+  ))
+
+avg_sleep_rem %>%
+  ggplot(aes(start_date,avg_rem))+
+  geom_line()+
+  labs(title="Average of Sleep REM",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(avg_sleep_rem$avg_rem)
+avg_sleepeREM_summary <- get_summary_stats(avg_sleep_rem)
+library(gridExtra)
+library(grid)
+library(png)
+
+avg_summary_table <- tableGrob(avg_sleepeREM_summary)
+png("SleepREM_summary2023.png", 600, 400)
+grid.draw(avg_summary_table)
+dev.off()
+
+
+
+######################################################## sleep level DEEP
+######################## suicide22
+
+## get sleep level light variable
+
+sleep_deep <- suicide_filtered %>%
+  select(participantidentifier, start_date, sleep_level_deep)
+
+### Drop null values
+sleep_deep <- sleep_deep %>%
+  filter(!is.na(sleep_level_deep))
+
+## extract only average
+avg_sleep_deep <- sleep_deep %>%
+  group_by(start_date) %>%
+  summarise(avg_deep = mean(sleep_level_deep))
+
+
+avg_sleep_deep %>%
+  ggplot(aes(start_date,avg_deep))+
+  geom_line()+
+  labs(title="Average of Sleep Level Deep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(avg_sleep_deep$avg_deep)
+avg_sleepdeep_summary <- get_summary_stats(avg_sleep_deep)
+library(gridExtra)
+library(grid)
+library(png)
+
+avg_summary_table <- tableGrob(avg_sleepdeep_summary)
+png("Sleepdeep_summary.png", 600, 400)
+grid.draw(avg_summary_table)
+dev.off()
+
+
+
+
+
+
+

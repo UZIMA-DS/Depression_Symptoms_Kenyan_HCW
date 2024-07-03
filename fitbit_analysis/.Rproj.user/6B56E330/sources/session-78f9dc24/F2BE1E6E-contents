@@ -1,0 +1,43 @@
+---
+title: "sleep_analysis01"
+author: "Dr.Andai"
+date: "2024-06-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+#sleep_log <- dbReadTable(con, "FactFitBitSleepLog")
+dim(sleep_log)
+# -68974 23      as per 29th/June
+
+## check column names and clean
+names(sleep_log)
+sleep_log <- clean_names(sleep_log)
+
+# First sleep analysis, the following variables were slelected.
+
+
+columns  <- c('participant_identifier','start_date','efficiency','minutes_asleep',
+              'sleep_level_light','sleep_level_deep','sleep_level_rem')
+sleep_minutes <- sleep_log[, columns, drop =FALSE]
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

@@ -1,0 +1,115 @@
+## Quarter 2 survey
+q2_survey <- dbReadTable(con, "Quarter2Survey")
+dim(q2_survey)
+# [1] 31983     5
+
+# survey 2 dictionary
+survey_dict <- dbReadTable(con,"DimSurveyDictionary") # already loaded
+q2_dictionary <- survey_dict[survey_dict$SurveyName == 'Quarter 1 survey',] # no provision for Q2
+q2_dictionary <- clean_names(q2_dictionary)
+phq2_dictionary <- q2_dictionary[q2_dictionary$step_identifier == 'PHQ', ]
+
+
+### get Q2 data and clean
+q2_survey <- q2_survey %>% arrange(participantidentifier)
+# don't need end date column
+q2_survey <- q2_survey[, -c(5)]
+
+################################################################################
+## Merge with PH9 version 5
+# first clean result identifier   ##- import step to resolve the merge conflict
+q2_survey$resultidentifier <- gsub("_","",q2_survey$resultidentifier)
+q2_survey$resultidentifier <- gsub("[0-9]+","",q2_survey$resultidentifier)
+# also clean survey version
+survey_version_5Q1$resultidentifier <- gsub("_","",survey_version_5Q1$resultidentifier)
+survey_version_5Q1$resultidentifier <- gsub("[0-9]+","",survey_version_5Q1$resultidentifier)
+##
+q2_merged <- inner_join(survey_version_5Q1, q2_survey, by="resultidentifier")
+columns_4 <- c('participantidentifier','answers','resultidentifier','StartDate') # same with columns 3
+q2_merged_cleaned <- q2_merged[, columns_4, drop=FALSE]
+################################################################################
+
+## date cleaning
+q2_merged_cleaned <- q2_merged_cleaned %>% arrange(participantidentifier)
+q2_merged_cleaned <- q2_merged_cleaned %>% arrange(StartDate)
+q2_merged_cleaned$StartDate <- as.Date(q2_merged_cleaned$StartDate)
+
+
+################################################################################
+# get 2023 data to account for Q2 entries
+# q2_2023 <- q2_merged_cleaned %>%
+#   filter(StartDate >= "2023-07-01" & StartDate <= "2023-12-31")
+###############################################################################
+q2_viz <- q2_merged_cleaned %>%
+  group_by(resultidentifier) %>%
+  mutate(count=n()) %>%
+  ungroup()
+
+q2_answers_viz <- q2_viz %>% arrange(participantidentifier)
+# display
+q2_answers_viz %>%
+  ggplot(aes(resultidentifier,fill=answers))+
+  geom_bar(position="fill", col="black")
+
+q2_answers_viz$answers <- as.numeric(q2_answers_viz$answers)
+# converted to numeric
+
+## change data frame to wide
+q2_answers_wide <- q2_answers_viz %>%
+  pivot_wider(
+    id_cols = participantidentifier,
+    names_from = resultidentifier,
+    values_from = answers
+  )
+# add a total column
+q2_answers_widetotal <- q2_answers_wide %>%
+  rowwise() %>% 
+  mutate(total=sum(c_across(concentr:failure)))
+
+################################################################################
+# q2 survey participants
+q2_participants_list <- q2_answers_wide$participantidentifier
+## 325 participants
+
+q2_filtered <- q2_answers_wide %>% filter(participantidentifier %in% filtered) 
+## 287
+### - represents participants in Q1 and Q2 between July - Dec 2023                 ## wrong
+
+# add a total column
+q2_filtered_widetotal <- q2_filtered %>%
+  rowwise() %>% 
+  mutate(total=sum(c_across(concentr:failure)))
+################################################################################
+
+
+# Classify depression scores
+depression_scores <- q2_filtered_widetotal %>%
+  mutate(score = case_when(
+    total <= 4 ~ "No depression",
+    total <= 9 ~ "Mild depression",
+    total <= 14 ~ "Moderate depression",
+    total <= 19 ~ "Moderately Severe depression",
+    TRUE ~ "Severe depression"
+  ))
+
+depression_scores %>%
+  ggplot(aes(score))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+count <- rep(1, times=287)
+depression_scores <- cbind(depression_scores,count)
+
+depression_scores_table <- depression_scores %>%
+  group_by(score) %>%
+  summarise(count_a = n()) %>%
+  mutate(percentage = count_a / sum(count) * 100)
+
+print(depression_scores_table)
+
+depression_scores_table <- tableGrob(depression_scores_table)
+png("depression287.png", 600, 400)
+grid.draw(depression_scores_table)
+dev.off()
+
+

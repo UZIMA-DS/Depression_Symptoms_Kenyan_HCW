@@ -1,0 +1,475 @@
+library(tidyverse)
+
+
+## depression, anxiety, alcohol, 
+# sleep mood
+
+
+## Quarter 1 Survey
+# q1_survey <- dbReadTable(con, "Quarter1Survey")
+# dim(q1_survey)
+# # - [1] 34009     5
+
+
+# survey dictionary
+survey_dict <- dbReadTable(con,"DimSurveyDictionary")
+q1_dictionary <- survey_dict[survey_dict$SurveyName == 'Quarter 1 survey',]
+
+
+################################################################################
+### Get all participants 336 participants
+length_all_participants <- length(unique(q1_survey$participantidentifier))
+q1_all_participants <- q1_survey
+
+
+## - clean all participants
+q1_all_participants <- q1_all_participants %>% arrange(participantidentifier)
+q1_all_participants <- q1_all_participants[, -c(5)]
+
+## get PHQ version 4 or 5
+q1_dictionary <- clean_names(q1_dictionary)
+phq_dictionary <- q1_dictionary[q1_dictionary$step_identifier == 'PHQ', ]
+survey_version_5Q1 <- phq_dictionary[phq_dictionary$survey_version == '5', ]
+rownames(survey_version_5Q1) <- NULL
+
+
+# rename resultidentifier column
+# survey_version_5
+survey_version_5Q1 <- survey_version_5Q1 %>%
+  rename(resultidentifier=result_identifier)
+
+# merge data
+q1_all_participants_merged <- inner_join(survey_version_5Q1, q1_all_participants, by="resultidentifier")
+columns_3 <- c('participantidentifier','answers','resultidentifier','StartDate')
+q1_all_participants_cleaned <- q1_all_participants_merged[, columns_3, drop=FALSE]
+
+
+
+## DATA VIZ
+# clean
+q1_answers_viz <- q1_all_participants_cleaned %>%
+  group_by(resultidentifier) %>%
+  mutate(count=n()) %>%
+  ungroup()
+
+q1_answers_viz <- q1_answers_viz %>% arrange(participantidentifier)
+# display
+q1_answers_viz %>%
+  ggplot(aes(resultidentifier,fill=answers))+
+  geom_bar(position="fill", col="black")
+
+
+q1_answers_viz$answers <- as.numeric(q1_answers_viz$answers)
+# converted to numeric
+
+# change data frame to wide
+q1_answers_wide <- q1_answers_viz %>%
+  pivot_wider(
+    id_cols = participantidentifier,
+    names_from = resultidentifier,
+    values_from = answers
+  ) ## 336 participants get them to a list
+## q1 particpant list
+q1_participants_list <- q1_answers_wide$participantidentifier
+
+
+# add a total column
+q1_answers_widetotal <- q1_answers_wide %>%
+  rowwise() %>% 
+  mutate(total=sum(c_across(concentr0_1:failure0_1)))
+
+################################################################################
+
+# filter based on 325 participants from Q2 survey
+# this gets those who are in Q1 and Q 2
+q1_answers_widetotal <- q1_answers_widetotal %>% filter(participantidentifier %in% participants_list)
+
+# takes the number to 287
+
+filtered <- q1_answers_widetotal$participantidentifier
+
+################################################################################
+
+###### From that, we will have Two Quarter 1's one with 336 participants the other with 287
+
+
+# Classify depression scores
+depression_scores <- q1_answers_widetotal %>%
+  mutate(score = case_when(
+    total <= 4 ~ "No depression",
+    total <= 9 ~ "Mild depression",
+    total <= 14 ~ "Moderate depression",
+    total <= 19 ~ "Moderately Severe depression",
+    TRUE ~ "Severe depression"
+  ))
+
+depression_scores %>%
+  ggplot(aes(score))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+count <- rep(1, times=336)
+depression_scores <- cbind(depression_scores,count)
+
+depression_scores_table <- depression_scores %>%
+  group_by(score) %>%
+  summarise(count_a = n()) %>%
+  mutate(percentage = count_a / sum(count) * 100)
+
+print(depression_scores_table)
+
+depression_scores_table <- tableGrob(depression_scores_table)
+png("depression_quarter1_336.png", 600, 400)
+grid.draw(depression_scores_table)
+dev.off()
+
+
+# 
+# # Quarter 1 survey duration
+# q1_survey <- q1_survey %>% arrange(StartDate)
+# columns_date <- c('participantidentifier','StartDate')
+# q1_survey_dates <- q1_survey[,columns_date, drop=FALSE]
+# 
+# q1_survey_distinctdates <- q1_survey_dates %>% distinct()
+# 
+# 
+
+###############################################################################
+# ANXIETY
+## get PHQ
+q1_dictionary <- clean_names(q1_dictionary)
+gad_dictionary <- q1_dictionary[q1_dictionary$step_identifier == 'GAD7', ]
+gad_version_5 <- gad_dictionary[gad_dictionary$survey_version == '5', ]
+rownames(gad_version_5) <- NULL
+
+# rename resultidentifier column
+# survey_version_5
+gad_version_5 <- gad_version_5 %>%
+  rename(resultidentifier=result_identifier)
+
+# merge data
+gad_merged <- inner_join(gad_version_5, q1_all_participants, by="resultidentifier")
+columns_4 <- c('participantidentifier','answers','resultidentifier','StartDate')
+gad_merged_cleaned <- gad_merged[, columns_4, drop=FALSE]
+
+
+
+## DATA VIZ
+# clean
+gad_answers_viz <- gad_merged_cleaned %>%
+  group_by(resultidentifier) %>%
+  mutate(count=n()) %>%
+  ungroup()
+
+gad_answers_viz <- gad_answers_viz %>% arrange(participantidentifier)
+# display
+gad_answers_viz %>%
+  ggplot(aes(resultidentifier,fill=answers))+
+  geom_bar(position="fill", col="black")
+
+gad_answers_viz$answers <- as.numeric(gad_answers_viz$answers)
+# converted to numeric
+
+# change data frame to wide
+gad_wide <- gad_answers_viz %>%
+  pivot_wider(
+    id_cols = participantidentifier,
+    names_from = resultidentifier,
+    values_from = answers
+  )
+# add a total column
+gad_answers_widetotal <- gad_wide %>%
+  rowwise() %>% 
+  mutate(total=sum(c_across(norelax0_1:worrying0_1)))
+
+gad_answers_widetotal <- gad_answers_widetotal %>% filter(participantidentifier %in% filtered)
+## Gad answered filtered to 287
+
+
+
+# Classify Anxiety Scores
+gad_scores <- gad_answers_widetotal %>%
+  mutate(score = case_when(
+    total <= 4 ~ "No anxiety",
+    total <= 9 ~ "Mild",
+    total <= 14 ~ "Moderate",
+    TRUE ~ "Severe anxiety"
+  ))
+
+gad_scores %>%
+  ggplot(aes(score))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+count <- rep(1, times=336)
+gad_scores <- cbind(gad_scores,count)
+
+gad_scores_table <- gad_scores %>%
+  group_by(score) %>%
+  summarise(count_a = n()) %>%
+  mutate(percentage = count_a / sum(count) * 100)
+
+print(gad_scores_table)
+
+Anxiety_scores_table <- tableGrob(gad_scores_table)
+png("Anxiety 336.png", 600, 400)
+grid.draw(Anxiety_scores_table)
+dev.off()
+
+
+
+
+
+
+
+################################################################################
+###
+# Substance Used
+## get PHQ
+q1_dictionary <- clean_names(q1_dictionary)
+Substancesused_dictionary <- q1_dictionary[q1_dictionary$step_identifier == 'Substancesused', ]
+Substancesused_v5 <- Substancesused_dictionary[Substancesused_dictionary$survey_version == '5', ]
+rownames(Substancesused_dictionary) <- NULL
+
+# rename resultidentifier column
+# survey_version_5
+Substancesused_v5 <- Substancesused_v5 %>%
+  rename(resultidentifier=result_identifier)
+
+# merge data
+Substancesused_v5_merged <- inner_join(Substancesused_v5, q1_all_participants, by="resultidentifier")
+columns_4 <- c('participantidentifier','answers','resultidentifier','StartDate')
+Substancesused_v5_merged_cleaned <- Substancesused_v5_merged[, columns_4, drop=FALSE]
+
+
+## DATA VIZ SUBSTANCE
+# clean
+substance_answers_viz <- Substancesused_v5_merged_cleaned %>%
+  group_by(resultidentifier) %>%
+  mutate(count=n()) %>%
+  ungroup()
+
+substance_answers_viz <- substance_answers_viz %>% arrange(participantidentifier)
+
+class(substance_answers_viz$answers)
+# character
+substance_answers_viz$answers <- as.numeric(substance_answers_viz$answers)
+# converted to numeric
+
+substance_answers_viz %>%
+  ggplot(aes(resultidentifier,answers))+
+  geom_bar(stat="identity")
+
+substance_answers_viz <- substance_answers_viz [,-5]
+
+count <- rep(1, times=3372)
+substance_answers_viz <- cbind(substance_answers_viz,count)
+
+
+##########################
+# Alcohol
+substance_alcohol <- substance_answers_viz[substance_answers_viz$resultidentifier == 'Alcohol_1',]
+substance_alcohol <- substance_alcohol %>% distinct()
+
+alcohol_table <- substance_alcohol %>%
+  group_by(answers) %>%
+  summarise(count_a = n()) %>%
+  mutate(percentage = count_a / sum(count) * 100)
+
+print(alcohol_table)
+
+alcohol_scores_table <- tableGrob(alcohol_table)
+png("Alcohol 336.png", 600, 400)
+grid.draw(alcohol_scores_table)
+dev.off()
+
+##########################
+# Cannabis
+substance_cannabis <- substance_answers_viz[substance_answers_viz$resultidentifier == 'Cannabis_1',]
+substance_cannabis <- substance_cannabis %>% distinct()
+
+cannabis_table <- substance_cannabis %>%
+  group_by(answers) %>%
+  summarise(count_a = n()) %>%
+  mutate(percentage = count_a / sum(count) * 100)
+
+print(cannabis_table)
+
+cannabis_scores_table <- tableGrob(cannabis_table)
+png("Cannabis 336.png", 600, 400)
+grid.draw(cannabis_scores_table)
+dev.off()
+
+##########################
+# Tobacco
+substance_tobacco <- substance_answers_viz[substance_answers_viz$resultidentifier == 'Tobacco_1',]
+substance_tobacco <- substance_tobacco %>% distinct()
+
+tobacco_table <- substance_tobacco %>%
+  group_by(answers) %>%
+  summarise(count_a = n()) %>%
+  mutate(percentage = count_a / sum(count) * 100)
+
+print(tobacco_table)
+
+tobacco_scores_table <- tableGrob(tobacco_table)
+png("tobacco 336.png", 600, 400)
+grid.draw(tobacco_scores_table)
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Neuroticsm
+
+# Baseline Neurotism
+Neuroticsm <- dbReadTable(con,"Neuroticsm")
+head(Neuroticsm)
+
+## get PHQ
+q1_dictionary <- clean_names(q1_dictionary)
+Neuroticism_dictionary <- q1_dictionary[q1_dictionary$step_identifier == 'Neuroticism', ]
+rownames(Neuroticism_dictionary) <- NULL
+
+# rename resultidentifier column
+# survey_version_5
+Neuroticism_dictionary <- Neuroticism_dictionary %>%
+  rename(resultidentifier=result_identifier)
+
+# merge data 
+q1_all_participants$resultidentifier <- gsub("_","",q1_all_participants$resultidentifier)
+q1_all_participants$resultidentifier <- gsub("[0-9]+","",q1_all_participants$resultidentifier)
+q1_all_participants$resultidentifier <- tolower(q1_all_participants$resultidentifier)
+neuroticism_merged <- inner_join(Neuroticism_dictionary, q1_all_participants, by="resultidentifier")
+
+columns_4 <- c('participantidentifier','answers','resultidentifier','StartDate')
+neuroticism_merged_cleaned <- neuroticism_merged[, columns_4, drop=FALSE]
+
+
+## PTSD
+
+## get PHQ
+q1_dictionary <- clean_names(q1_dictionary)
+PTSD_dictionary <- q1_dictionary[q1_dictionary$step_identifier == 'PTSD', ]
+PTSD_v5 <- PTSD_dictionary[PTSD_dictionary$survey_version == '5', ]
+rownames(PTSD_dictionary) <- NULL
+
+# rename resultidentifier column
+# survey_version_5
+PTSD_dictionary <- PTSD_dictionary %>%
+  rename(resultidentifier=result_identifier)
+
+# merge data 
+# q1_all_participants$resultidentifier <- gsub("_","",q1_all_participants$resultidentifier)
+# q1_all_participants$resultidentifier <- gsub("[0-9]+","",q1_all_participants$resultidentifier)
+# q1_all_participants$resultidentifier <- tolower(q1_all_participants$resultidentifier)
+PTSD_merged <- inner_join(PTSD_dictionary, q1_all_participants, by="resultidentifier")
+
+columns_4 <- c('participantidentifier','answers','resultidentifier','StartDate')
+PTSD_merged_cleaned <- PTSD_merged[, columns_4, drop=FALSE]
+
+
+
+## DATA VIZ
+# clean
+PTSD_answers_viz <- PTSD_merged_cleaned %>%
+  group_by(resultidentifier) %>%
+  mutate(count=n()) %>%
+  ungroup()
+
+PTSD_answers_viz <- PTSD_answers_viz %>% arrange(participantidentifier)
+# display
+PTSD_answers_viz %>%
+  ggplot(aes(resultidentifier,fill=answers))+
+  geom_bar(position="fill", col="black")
+
+
+class(gad_answers_viz$answers)
+# character
+gad_answers_viz$answers <- as.numeric(gad_answers_viz$answers)
+# converted to numeric
+
+# change data frame to wide
+gad_wide <- gad_answers_viz %>%
+  pivot_wider(
+    id_cols = participantidentifier,
+    names_from = resultidentifier,
+    values_from = answers
+  )
+# add a total column
+gad_answers_widetotal <- gad_wide %>%
+  rowwise() %>% 
+  mutate(total=sum(c_across(norelax0_1:worrying0_1)))
+
+gad_answers_widetotal <- gad_answers_widetotal %>% filter(participantidentifier %in% filtered)
+## Gad answered filtered to 287
+
+
+
+# Classify depression scores
+gad_scores <- gad_answers_widetotal %>%
+  mutate(score = case_when(
+    total <= 4 ~ "No anxiety",
+    total <= 9 ~ "Mild",
+    total <= 14 ~ "Moderate",
+    TRUE ~ "Severe anxiety"
+  ))
+
+gad_scores %>%
+  ggplot(aes(score))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+count <- rep(1, times=336)
+gad_scores <- cbind(gad_scores,count)
+
+gad_scores_table <- gad_scores %>%
+  group_by(score) %>%
+  summarise(count_a = n()) %>%
+  mutate(percentage = count_a / sum(count) * 100)
+
+print(gad_scores_table)
+
+Anxiety_scores_table <- tableGrob(gad_scores_table)
+png("gad 336.png", 600, 400)
+grid.draw(depression_scores_table)
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

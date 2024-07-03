@@ -1,0 +1,40 @@
+## Quarter 2 survey
+q2_survey <- dbReadTable(con, "Quarter2Survey")
+dim(q2_survey)
+# [1] 31983     5
+
+# survey 2 dictionary
+survey_dict <- dbReadTable(con,"DimSurveyDictionary") # already loaded
+q2_dictionary <- survey_dict[survey_dict$SurveyName == 'Quarter 1 survey',] # no provision for Q2
+q2_dictionary <- clean_names(q2_dictionary)
+phq2_dictionary <- q2_dictionary[q2_dictionary$step_identifier == 'PHQ', ]
+
+
+### get Q2 data and clean
+q2_survey <- q2_survey %>% arrange(participantidentifier)
+# don't need end date column
+q2_survey <- q2_survey[, -c(5)]
+
+length_all_participants <- length(unique(q2_survey$participantidentifier))
+# there are 325 participants
+
+################################################################################
+## Merge with PH9 version 5
+# first clean result identifier   ##- import step to resolve the merge conflict
+q2_survey$resultidentifier <- gsub("_","",q2_survey$resultidentifier)
+q2_survey$resultidentifier <- gsub("[0-9]+","",q2_survey$resultidentifier)
+# also clean survey version
+survey_version_5Q1$resultidentifier <- gsub("_","",survey_version_5Q1$resultidentifier)
+survey_version_5Q1$resultidentifier <- gsub("[0-9]+","",survey_version_5Q1$resultidentifier)
+##
+q2_merged <- inner_join(survey_version_5Q1, q2_survey, by="resultidentifier")
+columns_4 <- c('participantidentifier','answers','resultidentifier','StartDate')
+q2_merged_cleaned <- q2_merged[, columns_4, drop=FALSE]
+################################################################################
+
+## date cleaning
+q2_merged_cleaned <- q2_merged_cleaned %>% arrange(participantidentifier)
+q2_merged_cleaned <- q2_merged_cleaned %>% arrange(StartDate)
+q2_merged_cleaned$StartDate <- as.Date(q2_merged_cleaned$StartDate)
+
+#### data ready for analysis

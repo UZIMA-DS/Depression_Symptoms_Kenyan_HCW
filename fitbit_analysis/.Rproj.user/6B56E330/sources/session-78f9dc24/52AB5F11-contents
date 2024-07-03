@@ -1,0 +1,82 @@
+###### This script takes Quarter 1 data and set ups analysis for depression
+
+
+# Quarter 1 Survey
+q1_survey <- dbReadTable(con, "Quarter1Survey")
+dim(q1_survey)
+# - [1] 34009     5   as per 29th/June
+
+
+# get survey dictionary
+survey_dict <- dbReadTable(con,"DimSurveyDictionary")
+q1_dictionary <- survey_dict[survey_dict$SurveyName == 'Quarter 1 survey',]
+
+
+################################################################################
+
+length_all_participants <- length(unique(q1_survey$participantidentifier))
+# there are 336 participants
+q1_all_participants <- q1_survey # duplicate q1 survey
+
+
+## - clean all participants
+q1_all_participants <- q1_all_participants %>% arrange(participantidentifier)
+q1_all_participants <- q1_all_participants[, -c(5)]
+
+## get PHQ version 5 to assess for depression
+q1_dictionary <- clean_names(q1_dictionary)
+phq_dictionary <- q1_dictionary[q1_dictionary$step_identifier == 'PHQ', ]
+survey_version_5Q1 <- phq_dictionary[phq_dictionary$survey_version == '5', ]
+rownames(survey_version_5Q1) <- NULL
+
+
+# rename resultidentifier column
+# survey_version_5
+survey_version_5Q1 <- survey_version_5Q1 %>%
+  rename(resultidentifier=result_identifier)
+
+# merge data
+q1_all_participants_merged <- inner_join(survey_version_5Q1, q1_all_participants, by="resultidentifier")
+columns_3 <- c('participantidentifier','answers','resultidentifier','StartDate')
+q1_all_participants_cleaned <- q1_all_participants_merged[, columns_3, drop=FALSE]
+
+
+
+## DATA VIZ
+# clean
+q1_answers_viz <- q1_all_participants_cleaned %>%
+  group_by(resultidentifier) %>%
+  mutate(count=n()) %>%
+  ungroup()
+
+q1_answers_viz <- q1_answers_viz %>% arrange(participantidentifier)
+
+# display
+q1_answers_viz %>%
+  ggplot(aes(resultidentifier,fill=answers))+
+  geom_bar(position="fill", col="black")
+
+
+q1_answers_viz$answers <- as.numeric(q1_answers_viz$answers)
+# converted to numeric
+
+# change data frame to wide
+q1_answers_wide <- q1_answers_viz %>%
+  pivot_wider(
+    id_cols = participantidentifier,
+    names_from = resultidentifier,
+    values_from = answers
+  ) 
+
+
+# add a total column for analysis of total depression values
+q1_answers_widetotal <- q1_answers_wide %>%
+  rowwise() %>% 
+  mutate(total=sum(c_across(concentr0_1:failure0_1)))
+
+################################################################################
+## 336 participants get them to a list
+## q1 particpant list
+q1_participants_list <- q1_answers_wide$participantidentifier
+
+#### data ready for analysis

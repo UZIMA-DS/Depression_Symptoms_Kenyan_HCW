@@ -1,0 +1,248 @@
+# analysis on FactFitBitSleepLog
+names(sleep_log)
+sleep_log <- clean_names(sleep_log)
+
+columns  <- c('participant_identifier','start_date','efficiency','minutes_asleep',
+              'sleep_level_light','sleep_level_deep','sleep_level_rem')
+sleep_minutes <- sleep_log[, columns, drop =FALSE]
+
+
+
+## Sleep data analysis
+## Data Viz
+sleep_minutes %>%
+  ggplot(aes(start_date,minutes_asleep))+
+  geom_line()+
+  labs(title="Minutes asleep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+## clean data
+# - drop duplicates
+sleep_cleaning <- sleep_minutes %>% distinct()
+
+sleep_cleaning$start_date <- as.Date(sleep_cleaning$start_date)
+
+sleep_cleaning <- sleep_cleaning %>% arrange(start_date)
+
+# plot with simple moving average
+# sleep minutes asleep
+sleep_cleaning %>%
+  ggplot(aes(start_date,minutes_asleep))+
+  geom_line()+
+  geom_ma(ma_fun = SMA, n = 30)+
+  labs(title="Moving average of Minutes asleep",
+       subtitle='(window n=30)',
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+######## extract only average
+avg_sleep<-sleep_cleaning %>%
+  group_by(start_date) %>%
+  summarise(avg_sleep = mean(minutes_asleep))
+
+avg_sleep %>%
+  ggplot(aes(start_date,avg_sleep))+
+  geom_line()+
+  labs(title="Average of Minutes asleep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(avg_sleep$avg_sleep)
+avg_sleep_summary <- get_summary_stats(avg_sleep)
+library(gridExtra)
+library(grid)
+library(png)
+
+avg_summary_table <- tableGrob(avg_sleep_summary)
+png("summary.png", 600, 400)
+grid.draw(avg_summary_table)
+dev.off()
+
+
+
+################################## sleep in 2023 to cover for Quarter 1 
+### filtering sleep 2023 and based on the Q1 list
+
+
+sleep_2023 <- sleep_cleaning %>%
+  filter(start_date >= "2023-07-01" & start_date <= "2023-12-31")
+# clean participant identifier
+sleep_2023 <- sleep_2023 %>%
+  rename(participantidentifier=participant_identifier)
+
+
+###### filter now with the 326 participants who appear in Quarter 1 list
+q1_sleep_2023 <- sleep_2023 %>% filter(participantidentifier %in% q1_participants_list)
+
+q1_sleep_2023 <- q1_sleep_2023 %>% arrange(participantidentifier)
+
+## extract only average
+avgq1_sleep2023 <- q1_sleep_2023 %>%
+  group_by(start_date) %>%
+  summarise(avg_sleep = mean(minutes_asleep))
+
+
+avgq1_sleep2023 %>%
+  ggplot(aes(start_date,avg_sleep))+
+  geom_line()+
+  labs(title="Average of Minutes asleep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(avgq1_sleep2023$avg_sleep)
+avgQ1_sleepSummary2023 <- get_summary_stats(avgq1_sleep2023)
+library(gridExtra)
+library(grid)
+library(png)
+
+avg_summary_table <- tableGrob(avgQ1_sleepSummary2023)
+png("q1_minutesAsleep2023.png", 600, 400)
+grid.draw(avg_summary_table)
+dev.off()
+
+
+######################################################## sleep level light 
+## get sleep level light variable
+
+q1Sleep_light <- q1_sleep_2023 %>%
+  select(participantidentifier, start_date, sleep_level_light)
+
+### Drop null values
+q1Sleep_light <- q1Sleep_light %>%
+  filter(!is.na(sleep_level_light))
+
+## extract only average
+q1avg_sleepLight <- q1Sleep_light %>%
+  group_by(start_date) %>%
+  summarise(avg_light = mean(sleep_level_light))
+
+
+q1avg_sleepLight %>%
+  ggplot(aes(start_date,avg_light))+
+  geom_line()+
+  labs(title="Average of Sleep Level Light",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(q1avg_sleepLight$avg_light)
+q1avg_sleepLight <- get_summary_stats(q1avg_sleepLight)
+
+q1avg_lightTable <- tableGrob(q1avg_sleepLight)
+png("q1_sleepLevelLight2023.png", 600, 400)
+grid.draw(q1avg_lightTable)
+dev.off()
+
+
+##################################################################### efficiency
+
+q1Sleep_light <- q1_sleep_2023 %>%
+  select(participantidentifier, start_date, efficiency)
+
+### Drop null values
+q1Sleep_light <- q1Sleep_light %>%
+  filter(!is.na(efficiency))
+
+## extract only average
+q1avg_sleepLight <- q1Sleep_light %>%
+  group_by(start_date) %>%
+  summarise(avg_light = mean(efficiency))
+
+
+q1avg_sleepLight %>%
+  ggplot(aes(start_date,avg_light))+
+  geom_line()+
+  labs(title="Average of Sleep Level Light",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(q1avg_sleepLight$avg_light)
+q1avg_sleepLight <- get_summary_stats(q1avg_sleepLight)
+
+q1avg_lightTable <- tableGrob(q1avg_sleepLight)
+png("q1_sleepEfficiency2023.png", 600, 400)
+grid.draw(q1avg_lightTable)
+dev.off()
+
+##################################################################### REM
+
+sleep_rem <- q1_sleep_2023 %>%
+  select(participantidentifier, start_date, sleep_level_rem)
+
+### Drop null values
+sleep_rem <- sleep_rem %>%
+  filter(!is.na(sleep_level_rem))
+
+## extract only average
+avg_sleep_rem <- sleep_rem %>%
+  group_by(start_date) %>%
+  summarise(avg_rem = mean(sleep_level_rem
+  ))
+
+avg_sleep_rem %>%
+  ggplot(aes(start_date,avg_rem))+
+  geom_line()+
+  labs(title="Average of Sleep REM",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(avg_sleep_rem$avg_rem)
+avg_sleepeREM_summary <- get_summary_stats(avg_sleep_rem)
+library(gridExtra)
+library(grid)
+library(png)
+
+avg_summary_table <- tableGrob(avg_sleepeREM_summary)
+png("q1_SleepREM.png", 600, 400)
+grid.draw(avg_summary_table)
+dev.off()
+
+
+
+######################################################## sleep level DEEP
+
+## get sleep level light variable
+
+sleep_deep <- q1_sleep_2023 %>%
+  select(participantidentifier, start_date, sleep_level_deep)
+
+### Drop null values
+sleep_deep <- sleep_deep %>%
+  filter(!is.na(sleep_level_deep))
+
+## extract only average
+avg_sleep_deep <- sleep_deep %>%
+  group_by(start_date) %>%
+  summarise(avg_deep = mean(sleep_level_deep))
+
+
+avg_sleep_deep %>%
+  ggplot(aes(start_date,avg_deep))+
+  geom_line()+
+  labs(title="Average of Sleep Level Deep",
+       x='',
+       y='Time in Minutes')+
+  theme_bw()
+
+summary(avg_sleep_deep$avg_deep)
+avg_sleepdeep_summary <- get_summary_stats(avg_sleep_deep)
+
+
+avg_summary_table <- tableGrob(avg_sleepdeep_summary)
+png("q1_sleepDeep2023.png", 600, 400)
+grid.draw(avg_summary_table)
+dev.off()
+
+
+
+
+
+
+

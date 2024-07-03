@@ -1,0 +1,73 @@
+# Baseline Analysis
+
+## Get Depression Variables
+Depression <- dbReadTable(con, "Depression")
+dim(Depression)
+names(Depression)
+
+# remove start date and end date
+Depression <- Depression[, -c(4,5)]
+
+# change data frame to wide
+Depression$answers <- as.numeric(Depression$answers)
+depression_wide <- Depression %>%
+  pivot_wider(
+    id_cols = participantidentifier,
+    names_from = resultidentifier,
+    values_from = answers
+  )
+### Depression Wide has 526 participants
+
+# add a total column
+depression_widetotal <- depression_wide %>%
+  rowwise() %>% 
+  mutate(total=sum(c_across(asleep0:suic0)))
+
+
+#########################################################################################
+# filter based on 325 participants from Q2 survey
+depression_baseline_filtered <- depression_widetotal %>% filter(participantidentifier %in% participants_list)
+# filter based on 287 participants from Q1/Q2 survey
+depression_baseline_filtered <- depression_widetotal %>% filter(participantidentifier %in% filtered)
+# add a total column
+depression_widetotal <- depression_baseline_filtered %>%
+  rowwise() %>% 
+  mutate(total=sum(c_across(asleep0:suic0)))
+#########################################################################################
+
+# Classify depression scores
+depression_widetotal_scores <- depression_widetotal %>%
+  mutate(score = case_when(
+    total <= 4 ~ "No depression",
+    total <= 9 ~ "Mild depression",
+    total <= 14 ~ "Moderate depression",
+    total <= 19 ~ "Moderately Severe depression",
+    TRUE ~ "Severe depression"
+  ))
+
+## VIZ
+depression_widetotal_scores %>%
+  ggplot(aes(score))+
+  geom_bar()+
+  labs(title ='Baseline Depression Scores',
+       subtitle= 'particpants with Q1 and Q2 data',
+       x="")+
+  theme(axis.text.x = element_text(angle = 45, hjust=1))+
+  theme_bw()
+
+## Get Table
+count <- rep(1, times=287)
+depression_scores <- cbind(depression_widetotal_scores,count)
+
+depression_scores_table <- depression_scores %>%
+  group_by(score) %>%
+  summarise(count_a = n()) %>%
+  mutate(percentage = count_a / sum(count) * 100)
+
+print(depression_scores_table)
+
+depression_scores_table <- tableGrob(depression_scores_table)
+png("baseline_depression287.png", 600, 400)
+grid.draw(depression_scores_table)
+dev.off()
+

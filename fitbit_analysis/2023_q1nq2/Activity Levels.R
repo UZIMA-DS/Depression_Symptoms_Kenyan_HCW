@@ -1,0 +1,163 @@
+##### This analysis focuses on activity levels from July- Dec 2023
+
+## Analysis on FitBit Step Count data 29th June 2024
+daily_data <- dbReadTable(con,"FactFitBitDailyData")
+
+
+column_steps <- c('participantidentifier','date','steps')
+steps_filtered <- daily_data[, column_steps, drop=FALSE]
+
+
+##################################################### steps for 247 participants
+#### the criteria for filtering is from the suicide script which captures the 
+# list of participants from July- Dec 2023 and had answered Q1 n 2
+
+#### list_247Val <- suicide_data$participantidentifier
+
+steps_filtered <- steps_filtered %>%
+  filter(date >= "2023-07-01" & date <= "2023-12-31")
+
+## get the step pattern for 247 participants
+list_247<- steps_filtered %>% filter(participantidentifier %in% list_247Val)
+
+list_247 <- list_247 %>% arrange(participantidentifier)
+list_247$date <- as.Date(list_247$date)
+
+
+## extract only average
+list_247_avg <-list_247 %>%
+  group_by(date) %>%
+  summarise(avg_steps = mean(steps))
+
+### Drop null values
+list_247_avg <- list_247_avg %>%
+  filter(!is.na(avg_steps))
+
+list_247_avg %>%
+  ggplot(aes(date,avg_steps))+
+  geom_line()+
+  labs(title="Average Step Counts",
+       subtitle = "Q1 and Q2 participants",
+       x='',
+       y='steps')+
+  theme_bw()
+
+summary(list_247_avg$avg_steps)
+list_247_summary <- get_summary_stats(list_247_avg)
+
+list_247_summary <- tableGrob(list_247_summary)
+png("Step Counts.png", 600, 400)
+grid.draw(list_247_summary)
+dev.off()
+
+###############################################################################
+column_activity <- c('participantidentifier','date','minutesfairlyactive.',
+                     'minuteslightlyactive.','minutessedentary..','minutesveryactive..')
+activity_filtered <- daily_data[, column_activity, drop=FALSE]
+
+############################################################### activity for 2023
+activity_filtered <- activity_filtered %>%
+  filter(date >= "2023-07-01" & date <= "2023-12-31")
+
+##### get their activity pattern for 247 people
+activity_247 <- activity_filtered %>% filter(participantidentifier %in% list_247Val)
+
+
+activity_247 <- activity_247 %>% arrange(participantidentifier)
+
+
+#################################### extract Minutes Fairly Active only average
+activity_247_avg <-activity_247 %>%
+  group_by(date) %>%
+  summarise(avg_fairlyactive = mean(minutesfairlyactive.))
+
+activity_247_avg %>%
+  ggplot(aes(date,avg_fairlyactive))+
+  geom_line()+
+  labs(title="Minutes fairly active",
+       subtitle = "Q1 and Q2 participants",
+       x='',
+       y='Minutes')+
+  theme_bw()
+
+summary(activity_247_avg$avg_fairlyactive)
+activity_247_summary <- get_summary_stats(activity_247_avg)
+
+
+activity_247_summary <- tableGrob(activity_247_summary)
+png("Minutes_FairlyActive.png", 600, 400)
+grid.draw(activity_247_summary)
+dev.off()
+
+###################################################################
+
+#################################### extract Minutes Lightly Active only average
+activity_247_avg <- activity_247 %>%
+  group_by(date) %>%
+  summarise(avg_fairlyactive = mean(minuteslightlyactive.))
+
+activity_247_avg %>%
+  ggplot(aes(date,avg_fairlyactive))+
+  geom_line()+
+  labs(title="Minutes Lightly active",
+       subtitle = "Q1 and Q2 participants",
+       x='',
+       y='Minutes')+
+  theme_bw()
+
+summary(activity_247_avg$avg_fairlyactive)
+activity_247_summary <- get_summary_stats(activity_247_avg)
+
+activity_247_summary <- tableGrob(activity_247_summary)
+png("Minutes_LightlyActive.png", 600, 400)
+grid.draw(activity_247_summary)
+dev.off()
+
+###################################################################
+
+######################################### extract Minutes Sedentary only average
+activity_247_avg <-activity_247 %>%
+  group_by(date) %>%
+  summarise(avg_fairlyactive = mean(minutessedentary..))
+
+activity_247_avg %>%
+  ggplot(aes(date,avg_fairlyactive))+
+  geom_line()+
+  labs(title="Average Minutes Sedentary",
+       subtitle = "Q1 and Q2 participants",
+       x='',
+       y='Minutes')+
+  theme_bw()
+
+summary(activity_247_avg$avg_fairlyactive)
+activity_247_summary <- get_summary_stats(activity_247_avg)
+
+activity_247_summary <- tableGrob(activity_247_summary)
+png("Min_Sedentary.png", 600, 400)
+grid.draw(activity_247_summary)
+dev.off()
+
+###################################################################
+
+###################################### extract Minutes Very active only average
+activity_247_avg <-activity_247 %>%
+  group_by(date) %>%
+  summarise(avg_fairlyactive = mean(minutesveryactive..))
+
+activity_247_avg %>%
+  ggplot(aes(date,avg_fairlyactive))+
+  geom_line()+
+  labs(title="Minutes Very Active",
+       subtitle = "Q1 and Q2 participants",
+       x='',
+       y='Minutes')+
+  theme_bw()
+
+summary(activity_247_avg$avg_fairlyactive)
+activity_247_summary <- get_summary_stats(activity_247_avg)
+
+
+activity_247_summary <- tableGrob(activity_247_summary)
+png("in_Very Active.png", 600, 400)
+grid.draw(activity_247_summary)
+dev.off()

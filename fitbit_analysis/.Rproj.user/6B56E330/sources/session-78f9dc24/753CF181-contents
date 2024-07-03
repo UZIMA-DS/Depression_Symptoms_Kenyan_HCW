@@ -1,0 +1,13 @@
+study_participants <- dbReadTable(con,"StudyParticipants")
+
+enrolled_participants <- dbReadTable(con,"DimEnrolledParticipants")
+
+names(study_participants)
+study_participants <- clean_names(study_participants)
+
+columns_study <- c('participant_identifier','gender','age')
+study_participants_filtered <- study_participants[, columns_study, drop=FALSE]
+
+# rename participants
+study_participants_filtered <- study_participants_filtered %>%
+  rename(participantidentifier=participant_identifier)

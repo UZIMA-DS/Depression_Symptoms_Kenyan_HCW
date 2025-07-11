@@ -1,0 +1,1257 @@
+library(odbc)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(purrr)
+library(lubridate)
+library(tableone)
+library(stringr)
+library(broom)
+library(gee)
+library(weights)
+library(anesrake)
+library(glmnet)
+library(twang)
+library(mice)
+library(geepack)
+library(survey)
+library(Hmisc)         
+library(matrixStats)   
+
+setwd('C:\\Users\\LENOVO\\OneDrive - Aga Khan University\\Desktop\\AKU\\HCW Project\\DataExploration')
+
+# Database connection
+con <- dbConnect(odbc(),
+                 Driver = 'ODBC Driver 17 for SQL Server',
+                 Server = 'uzima-dmac.database.windows.net',
+                 Database = 'Uzima_db',
+                 username = '',
+                 Authentication = 'ActiveDirectoryInteractive')
+
+# Function to fetch data from SQL
+fetch_data <- function(query) {
+  result <- dbSendQuery(con, query)
+  data <- dbFetch(result)
+  dbClearResult(result)
+  return(data)
+}
+
+# SQL Queries
+queries <- list(
+  enrollment = "
+    SELECT [ParticipantIdentifier], CAST([EnrollmentDate] AS DATE) AS EnrollmentDate
+    FROM [DW].[DimEnrolledParticipants]
+    WHERE [participantidentifier] IN (SELECT [participantidentifier] FROM [dbo].[StudyParticipants])",
+  baseline = "SELECT [participantidentifier], [resultidentifier], [answers] FROM [dbo].[DepressionAnalysis]",
+  dob = "SELECT [participantidentifier], [resultidentifier], [answers] FROM [dbo].[DepressionAnalysis] WHERE [resultidentifier] = 'DOB'",
+  quarter = function(q) sprintf("SELECT [participantidentifier], [resultidentifier], [answers] FROM [dbo].[Quarter%dSurvey] WHERE [participantidentifier] IN (SELECT [participantidentifier] FROM [dbo].[complete_phq])", q)
+)
+
+# Fetch Data
+enrollment_data <- fetch_data(queries$enrollment) %>% rename_with(tolower)
+baseline_data <- fetch_data(queries$baseline)
+dob_data <- fetch_data(queries$dob)
+quarter_data <- lapply(1:4, function(q) fetch_data(queries$quarter(q)))
+
+# Process Participant Data
+participant_dob_enrollment <- dob_data %>% 
+  inner_join(enrollment_data, by = 'participantidentifier') %>% 
+  mutate(Age = floor(as.numeric(difftime(enrollmentdate, answers, units = 'weeks')) / 52.25))
+
+# Pivot Baseline Data
+baseline_wide <- baseline_data %>% 
+  select(participantidentifier, resultidentifier, answers) %>% 
+  pivot_wider(names_from = resultidentifier, values_from = answers)
+
+# Merge with Age Data
+baseline_complete <- baseline_wide %>%
+  left_join(participant_dob_enrollment %>% select(participantidentifier, Age), by = 'participantidentifier')
+
+# Process Quarter Data
+quarter_wide <- lapply(quarter_data, function(qdata) {
+  qdata %>%
+    distinct(participantidentifier, resultidentifier, .keep_all = TRUE) %>%    # Remove duplicates based on participantidentifier and resultidentifier
+    pivot_wider(names_from = resultidentifier, values_from = answers)
+})
+#Extract the quartely_data
+quarter1_data <- quarter_wide[[1]] 
+quarter2_data <- quarter_wide[[2]] 
+quarter3_data <- quarter_wide[[3]]  
+quarter4_data <- quarter_wide[[4]]
+
+# Convert relevant columns to numeric
+baseline_varlists<-colnames(baseline_complete)
+q1_varlist<-colnames(quarter1_data)
+q2_varlist<-colnames(quarter2_data)
+q3_varlist<-colnames(quarter3_data)
+q4_varlist<-colnames(quarter4_data)
+
+##Function to convert the columns to numeric data type
+convert_numeric <- function(data, vars) {
+  data %>% select(all_of(vars)) %>% mutate(across(-participantidentifier, ~ as.numeric(.)))
+  
+}
+
+baseline_data_1 <- convert_numeric(baseline_complete, baseline_varlists)
+quarter1_data_1<-convert_numeric(quarter1_data,q1_varlist)
+quarter2_data_1<-convert_numeric(quarter2_data,q2_varlist)
+quarter3_data_1<-convert_numeric(quarter3_data,q3_varlist)
+quarter4_data_1<-convert_numeric(quarter4_data,q4_varlist)
+
+###SLE DATA
+
+# Function to fetch and pivot SLE data
+fetch_and_pivot_sle <- function(con, table_name, result_ids) {
+  query <- glue::glue("
+    SELECT [participantidentifier], [resultidentifier], [answers]
+    FROM [dbo].[{table_name}]
+    WHERE [participantidentifier] IN (
+      SELECT [participantidentifier]
+      FROM [dbo].[complete_phq]
+    )
+    AND [resultidentifier] IN ({paste0(\"'\", result_ids, \"'\", collapse = ', ')})
+    AND [answers] IS NOT NULL;
+  ")
+  
+  result <- dbSendQuery(con, query)
+  data <- dbFetch(result)
+  dbClearResult(result)  
+  
+  pivoted <- data %>%
+    pivot_wider(names_from = resultidentifier, values_from = answers)
+  
+  return(pivoted)
+}
+
+baseline_ids <- c("Events1", "Event3", "Event4", "Events")
+q1_ids <- paste0(c("Events1", "Event3", "Event4", "Events"), "_1")
+q2_ids <- paste0(c("Events1", "Event3", "Event4", "Events"), "_2")
+q3_ids <- paste0(c("Events1", "Event3", "Event4", "Events"), "_3")
+q4_ids <- paste0(c("Events1", "Event3", "Event4", "Events"), "_4")
+
+baseline_sle_pivoted_data <- fetch_and_pivot_sle(con, "DepressionAnalysis", baseline_ids)
+q1_sle_pivoted_data <- fetch_and_pivot_sle(con, "Quarter1Survey", q1_ids)
+q2_sle_pivoted_data <- fetch_and_pivot_sle(con, "Quarter2Survey", q2_ids)
+q3_sle_pivoted_data <- fetch_and_pivot_sle(con, "Quarter3Survey", q3_ids)
+q4_sle_pivoted_data <- fetch_and_pivot_sle(con, "Quarter4Survey", q4_ids)
+
+calculate_sle <- function(data, suffix = "") {
+  events1 <- paste0("Events1", suffix)
+  event3 <- paste0("Event3", suffix)
+  event4 <- paste0("Event4", suffix)
+  events <- paste0("Events", suffix)
+  
+  data %>%
+    mutate(SLE = case_when(
+      .data[[events1]] == 10 ~ "Yes",
+      .data[[events1]] %in% 1:9 ~ "Yes",
+      !is.na(.data[[event3]]) & .data[[event3]] == 11 ~ "Yes",
+      !is.na(.data[[event4]]) & .data[[event4]] == 12 ~ "No",
+      !is.na(.data[[events]]) & sapply(strsplit(.data[[events]], "\\|"), function(x) any(as.numeric(x) %in% 1:9)) ~ "Yes",
+      is.na(.data[[events1]]) & is.na(.data[[event3]]) & is.na(.data[[event4]]) & is.na(.data[[events]]) ~ NA_character_,
+      TRUE ~ "No"
+    ))
+}
+
+baseline_sle_analysis <- calculate_sle(baseline_sle_pivoted_data) %>% select(participantidentifier,SLE)
+q1_sle_analysis <- calculate_sle(q1_sle_pivoted_data, "_1")
+q2_sle_analysis <- calculate_sle(q2_sle_pivoted_data, "_2")
+q3_sle_analysis <- calculate_sle(q3_sle_pivoted_data, "_3")
+q4_sle_analysis <- calculate_sle(q4_sle_pivoted_data, "_4")
+
+
+###1. psychometric Assesment Vars
+
+#### Baseline psychometric Assesment Vars
+baseline_ptsd_event_vars <- c('Disaster', 'Accident', 'Robbed', 'Beatfamily', 'Beatnotfamily', 'Familybeat', 
+                              'Commbeat', 'Touch', 'Pressure', 'Dying', 'Attacked', 'Someoneattack', 
+                              'Stressfulmed', 'War', 'Otherstressful')
+baseline_ptsd_symptom_vars <- c('Upset', 'Dreams', 'Event', 'Emotion', 'Reactions', 'Remember', 'Reminder', 
+                                'Notremember', 'Negativechange', 'Thinking', 'Negativeemotion', 'Distant', 
+                                'Notpositive', 'Irritable', 'Riskybehav', 'Alert', 'Jumpy', 'Concentration', 'Sleep')
+baseline_efe_vars <- c('insulted', 'pushed', 'drinkers', 'violenhouse', 'quarrpar', 
+                       'quarryoupar', 'quarrparsib', 'quarryousib', 'chaotic', 'neglected')
+baseline_efe_positive_vars <- c('loved', 'hugged', 'wellhouse')
+baseline_phq_vars <- c('interest0', 'down0', 'asleep0', 'tired0', 'appetite0', 
+                       'failure0', 'concentr0', 'activity0', 'suic0')
+baseline_gad_vars <- c('nervous0', 'worrying0', 'muchworry0', 'norelax0', 'restless0', 
+                       'irritable0', 'afraid0')
+baseline_neuroticsm_vars1 <- c('anxious', 'emotions', 'worrier', 'noblue', 'nodepr', 'comfort')
+baseline_neuroticsm_vars2 <- c('wrong', 'thoughts', 'giveup', 'helpless', 'overeat', 'hide', 'pieces', 'inferior')
+
+baseline_vars_list <- list(
+  efe_vars = baseline_efe_vars,
+  efe_positive_vars = baseline_efe_positive_vars,
+  phq_vars = baseline_phq_vars,
+  gad_vars = baseline_gad_vars,
+  neuroticsm_vars1 = baseline_neuroticsm_vars1,
+  neuroticsm_vars2 = baseline_neuroticsm_vars2,
+  ptsd_event_vars=baseline_ptsd_event_vars,
+  ptsd_symptom_vars=baseline_ptsd_symptom_vars
+)
+
+### Q1 psychometric Assesment Vars
+quarter1_phq_vars <- c('interest0_1', 'down0_1', 'asleep0_1', 'tired0_1', 'appetite0_1', 
+                       'failure0_1', 'concentr0_1', 'activity0_1', 'suic0_1')
+quarter1_gad_vars <- c('nervous0_1', 'worrying0_1', 'muchworry0_1', 'norelax0_1', 'restless0_1', 
+                       'irritable0_1', 'afraid0_1')
+quarter1_ptsd_event_vars <- c('Disaster_1', 'Accident_1', 'Robbed_1', 'Beatfamily_1', 'Beatnotfamily_1', 'Familybeat_1', 
+                              'Commbeat_1', 'Touch_1', 'Pressure_1', 'Dying_1', 'Attacked_1', 'Someoneattack_1', 
+                              'Stressfulmed_1', 'War_1', 'Otherstressful_1')
+quarter1_ptsd_symptom_vars <- c('Upset_1', 'Dreams_1', 'Event_1', 'Emotion_1', 'Reactions_1', 'Remember_1', 'Reminder_1', 
+                                'Notremember_1', 'Negativechange_1', 'Thinking_1', 'Negativeemotion_1', 'Distant_1', 
+                                'Notpositive_1', 'Irritable_1', 'Riskybehav_1', 'Alert_1', 'Jumpy_1', 'Concentration_1', 'Sleep_1')
+quarter1_psychometric_vars_list <- list(phq_vars = quarter1_phq_vars,
+                                        gad_vars = quarter1_gad_vars,
+                                        ptsd_symptom_vars=quarter1_ptsd_symptom_vars,
+                                        ptsd_event_vars=quarter1_ptsd_event_vars)
+
+##Q2 psychometric Assesment Vars
+quarter2_phq_vars <- c('interest0_2', 'down0_2', 'asleep0_2', 'tired0_2', 'appetite0_2', 
+                       'failure0_2', 'concentr0_2', 'activity0_2', 'suic0_2')
+quarter2_gad_vars <- c('nervous0_2', 'worrying0_2', 'muchworry0_2', 'norelax0_2', 'restless0_2', 
+                       'irritable0_2', 'afraid0_2')
+quarter2_ptsd_event_vars <- c('Disaster_2', 'Accident_2', 'Robbed_2', 'Beatfamily_2', 'Beatnotfamily_2', 'Familybeat_2', 
+                              'Commbeat_2', 'Touch_2', 'Pressure_2', 'Dying_2', 'Attacked_2', 'Someoneattack_2', 
+                              'Stressfulmed_2', 'War_2', 'Otherstressful_2')
+quarter2_ptsd_symptom_vars <- c('Upset_2', 'Dreams_2', 'Event_2', 'Emotion_2', 'Reactions_2', 'Remember_2', 'Reminder_2', 
+                                'Notremember_2', 'Negativechange_2', 'Thinking_2', 'Negativeemotion_2', 'Distant_2', 
+                                'Notpositive_2', 'Irritable_2', 'Riskybehav_2', 'Alert_2', 'Jumpy_2', 'Concentration_2', 'Sleep_2')
+quarter2_psychometric_vars_list <- list(phq_vars = quarter2_phq_vars,
+                                        gad_vars = quarter2_gad_vars,
+                                        ptsd_symptom_vars=quarter2_ptsd_symptom_vars,
+                                        ptsd_event_vars=quarter2_ptsd_event_vars)
+
+### Q3 psychometric Assesment Vars
+quarter3_phq_vars <- c('interest0_3', 'down0_3', 'asleep0_3', 'tired0_3', 'appetite0_3', 
+                       'failure0_3', 'concentr0_3', 'activity0_3', 'suic0_3')
+quarter3_gad_vars <- c('nervous0_3', 'worrying0_3', 'muchworry0_3', 'norelax0_3', 'restless0_3', 
+                       'irritable0_3', 'afraid0_3')
+quarter3_ptsd_event_vars <- c('Disaster_3', 'Accident_3', 'Robbed_3', 'Beatfamily_3', 'Beatnotfamily_3', 'Familybeat_3', 
+                              'Commbeat_3', 'Touch_3', 'Pressure_3', 'Dying_3', 'Attacked_3', 'Someoneattack_3', 
+                              'Stressfulmed_3', 'War_3', 'Otherstressful_3')
+quarter3_ptsd_symptom_vars <- c('Upset_3', 'Dreams_3', 'Event_3', 'Emotion_3', 'Reactions_3', 'Remember_3', 'Reminder_3', 
+                                'Notremember_3', 'Negativechange_3', 'Thinking_3', 'Negativeemotion_3', 'Distant_3', 
+                                'Notpositive_3', 'Irritable_3', 'Riskybehav_3', 'Alert_3', 'Jumpy_3', 'Concentration_3', 'Sleep_3')
+quarter3_psychometric_vars_list <- list(phq_vars = quarter3_phq_vars,
+                                        gad_vars = quarter3_gad_vars,
+                                        ptsd_symptom_vars=quarter3_ptsd_symptom_vars,
+                                        ptsd_event_vars=quarter3_ptsd_event_vars)
+
+## Q4 psychometric Assesment Vars
+quarter4_phq_vars <- c('interest0_4', 'down0_4', 'asleep0_4', 'tired0_4', 'appetite0_4', 
+                       'failure0_4', 'concentr0_4', 'activity0_4', 'suic0_4')
+quarter4_gad_vars <- c('nervous0_4', 'worrying0_4', 'muchworry0_4', 'norelax0_4', 'restless0_4', 
+                       'irritable0_4', 'afraid0_4')
+quarter4_ptsd_event_vars <- c('Disaster_4', 'Accident_4', 'Robbed_4', 'Beatfamily_4', 'Beatnotfamily_4', 'Familybeat_4', 
+                              'Commbeat_4', 'Touch_4', 'Pressure_4', 'Dying_4', 'Attacked_4', 'Someoneattack_4', 
+                              'Stressfulmed_4', 'War_4', 'Otherstressful_4')
+quarter4_ptsd_symptom_vars <- c('Upset_4', 'Dreams_4', 'Event_4', 'Emotion_4', 'Reactions_4', 'Remember_4', 'Reminder_4', 
+                                'Notremember_4', 'Negativechange_4', 'Thinking_4', 'Negativeemotion_4', 'Distant_4', 
+                                'Notpositive_4', 'Irritable_4', 'Riskybehav_4', 'Alert_4', 'Jumpy_4', 'Concentration_4', 'Sleep_4')
+quarter4_psychometric_vars_list <- list(phq_vars = quarter4_phq_vars,
+                                        gad_vars = quarter4_gad_vars,
+                                        ptsd_symptom_vars=quarter4_ptsd_symptom_vars,
+                                        ptsd_event_vars=quarter4_ptsd_event_vars)
+
+#2.  Function to calculate the Psychometric tests 
+calculate_psychometric_assessment_score <- function(data, vars_list) {
+  #data <- list(participantidentifier = data$participantidentifier)
+  
+  # Calculate EFE score
+  if (!is.null(vars_list$efe_vars) && all(vars_list$efe_vars %in% colnames(data)) && 
+      !is.null(vars_list$efe_positive_vars) && all(vars_list$efe_positive_vars %in% colnames(data))) {
+    data$efe_score <- ifelse(
+      rowSums(is.na(data[vars_list$efe_vars])) <= 3 & 
+        rowSums(is.na(data[vars_list$efe_positive_vars])) <= 1,
+      (10 * rowMeans(data[vars_list$efe_vars], na.rm = TRUE) - 10) + 
+        (18 - 3 * rowMeans(data[vars_list$efe_positive_vars], na.rm = TRUE)),
+      NA
+    )
+  }
+  
+  # Calculate Neuroticism score
+  if (!is.null(vars_list$neuroticsm_vars1) && all(vars_list$neuroticsm_vars1 %in% colnames(data)) && 
+      !is.null(vars_list$neuroticsm_vars2) && all(vars_list$neuroticsm_vars2 %in% colnames(data))) {
+    data$neuroticsm_score <- ifelse(
+      rowSums(is.na(data[vars_list$neuroticsm_vars1])) <= 2 & 
+        rowSums(is.na(data[vars_list$neuroticsm_vars2])) <= 2,
+      (24 - 6 * rowMeans(data[vars_list$neuroticsm_vars1], na.rm = TRUE)) + 
+        (8 * rowMeans(data[vars_list$neuroticsm_vars2], na.rm = TRUE)),
+      NA
+    )
+  }
+  
+  # Calculate PHQ-9 score
+  if (!is.null(vars_list$phq_vars) && all(vars_list$phq_vars %in% colnames(data))) {
+    data$phq_score <- ifelse(
+      rowSums(is.na(data[vars_list$phq_vars])) <= 3,
+      9 * rowMeans(data[vars_list$phq_vars], na.rm = TRUE),
+      ifelse(
+        rowSums(is.na(data[vars_list$phq_vars])) == 0,
+        rowSums(data[vars_list$phq_vars]),
+        NA
+      )
+    )
+    data$phq_category <- ifelse(is.na(data$phq_score), NA, 
+                                ifelse(data$phq_score >= 10, 1, 0))
+  }
+  
+  # Calculate GAD-7 score
+  if (!is.null(vars_list$gad_vars) && all(vars_list$gad_vars %in% colnames(data))) {
+    data$gad_score <- ifelse(
+      rowSums(is.na(data[vars_list$gad_vars])) <= 2,
+      7 * rowMeans(data[vars_list$gad_vars], na.rm = TRUE),
+      NA
+    )
+    data$gad_category <- ifelse(is.na(data$gad_score), NA, 
+                                ifelse(data$gad_score >= 10, 1, 0))
+  }
+  
+  # Calculate PTSD Score and PTSD Category
+  if (!is.null(vars_list$ptsd_event_vars) && all(vars_list$ptsd_event_vars %in% colnames(data)) &&
+      !is.null(vars_list$ptsd_symptom_vars) && all(vars_list$ptsd_symptom_vars %in% colnames(data))) {
+    
+    ptsd_score <- ifelse(
+      rowSums(data[vars_list$ptsd_event_vars] == 1, na.rm = TRUE) > 0,
+      rowSums(data[vars_list$ptsd_symptom_vars], na.rm = TRUE), 
+      NA
+    )
+    
+    data$ptsd_score <- ptsd_score
+    
+    data$ptsd_category <- ifelse(is.na(ptsd_score), NA,
+                                 ifelse(ptsd_score >= 31, 1, 0))
+  }
+  
+  result_data <- as.data.frame(data)
+  return(data)
+}
+
+##Helper function to help calculate the psychometric scores and remove the single columns for each psychometric category
+process_scores <- function(data, vars_list, score_function = calculate_psychometric_assessment_score) {
+  scores <- score_function(data, vars_list)
+  vars_to_remove <- unlist(vars_list)
+  analysis_data <- scores[, !colnames(scores) %in% vars_to_remove]
+  return(analysis_data)
+}
+
+## Generate analysis data of complete PHQ Per time point
+baseline_analysis_data <- process_scores(baseline_data_1, baseline_vars_list)%>% filter(!is.na(phq_score))
+baseline_analysis_data<-baseline_analysis_data %>% left_join(baseline_sle_analysis,by='participantidentifier')
+baseline_analysis_data$SLE <- as.factor(baseline_analysis_data$SLE)
+
+quarter1_analysis_data <- process_scores(quarter1_data_1, quarter1_psychometric_vars_list)%>% filter(!is.na(phq_score))
+quarter1_analysis_data<-quarter1_analysis_data %>% left_join(q1_sle_analysis,by='participantidentifier')
+quarter1_analysis_data$SLE <- as.factor(quarter1_analysis_data$SLE)
+
+quarter2_analysis_data <- process_scores(quarter2_data_1, quarter2_psychometric_vars_list)%>% filter(!is.na(phq_score))
+quarter2_analysis_data<-quarter2_analysis_data %>% left_join(q2_sle_analysis,by='participantidentifier')
+quarter2_analysis_data$SLE <- as.factor(quarter2_analysis_data$SLE)
+
+quarter3_analysis_data <- process_scores(quarter3_data_1, quarter3_psychometric_vars_list)%>% filter(!is.na(phq_score))
+quarter3_analysis_data<-quarter3_analysis_data %>% left_join(q3_sle_analysis,by='participantidentifier')
+quarter3_analysis_data$SLE <- as.factor(quarter3_analysis_data$SLE)
+
+quarter4_analysis_data <- process_scores(quarter4_data_1, quarter4_psychometric_vars_list)%>% filter(!is.na(phq_score))
+quarter4_analysis_data<-quarter4_analysis_data %>% left_join(q4_sle_analysis,by='participantidentifier')
+quarter4_analysis_data$SLE <- as.factor(quarter4_analysis_data$SLE)
+
+###Pre-process dataset
+
+###1. Remove outliers
+clean_outliers <- function(data, column_name) {
+  Q1 <- quantile(data[[column_name]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(data[[column_name]], 0.75, na.rm = TRUE)
+  IQR_value <- Q3 - Q1
+  lower_bound <- Q1 - 1.5 * IQR_value
+  upper_bound <- Q3 + 1.5 * IQR_value
+  data_cleaned <- data[data[[column_name]] >= lower_bound & data[[column_name]] <= upper_bound, ]
+  return(data_cleaned)
+}
+
+baseline_analysis_data <- clean_outliers(baseline_analysis_data, "Hoursduty")
+baseline_analysis_data <- baseline_analysis_data %>% mutate(Hoursworked = ifelse(Hoursworked > 168, NA, Hoursworked))
+baseline_analysis_data$Experience[baseline_analysis_data$Experience == 1010] <- NA
+
+baseline_analysis_data$hours_normalized<-scale(baseline_analysis_data$Hoursworked,scale = TRUE,center = TRUE)[,1]
+baseline_analysis_data$Gender[baseline_analysis_data$Gender==1]<-0
+baseline_analysis_data$Gender[baseline_analysis_data$Gender==2]<-1
+baseline_analysis_data$Gender[baseline_analysis_data$Gender==4]<-NA
+
+
+baseline_analysis_data<-baseline_analysis_data %>% select(participantidentifier,Age,Gender,Marital,Children,Discrimination,Hoursworked,
+                                                          hours_normalized,efe_score,neuroticsm_score,phq_score,phq_category,gad_score,
+                                                          gad_category,Treatment,Majorerror,Experience,Cadre,SLE)
+
+q1_hdd_data_cleaned <- clean_outliers(quarter1_complete_phq_participants, "Hoursduty_1")
+quarter1_analysis_data <- quarter1_analysis_data %>% mutate(Hoursworked = ifelse(Hoursworked_1 > 168, NA, Hoursworked_1))
+quarter1_analysis_data$hours_normalized<-scale(quarter1_analysis_data$Hoursworked_1,scale = TRUE,center = TRUE)[,1]
+
+quarter1_analysis_data<-quarter1_analysis_data %>% select(participantidentifier,phq_score,phq_category,SLE,gad_score,gad_category,hours_normalized,
+                                                         Hoursworked_1,Discrimination_1,Majorerror_1,Treatment_1,)
+
+q2_hdd_data_cleaned <- clean_outliers(quarter2_complete_phq_participants, "Hoursduty_2")
+quarter2_analysis_data <- quarter2_analysis_data %>% mutate(Hoursworked = ifelse(Hoursworked_2 > 168, NA, Hoursworked_2))
+quarter2_analysis_data$hours_normalized<-scale(quarter2_analysis_data$Hoursworked_2,scale = TRUE,center = TRUE)[,1]
+
+
+quarter2_analysis_data<-quarter2_analysis_data %>% select(participantidentifier,phq_score,phq_category,SLE,gad_score,gad_category,hours_normalized,
+                                                         Hoursworked_2,Discrimination_2,Majorerror_2,Treatment_2)
+
+q3_hdd_data_cleaned <- clean_outliers(quarter3_complete_phq_participants, "Hoursduty_3")
+quarter3_analysis_data <- quarter3_analysis_data %>% mutate(Hoursworked = ifelse(Hoursworked_3 > 168, NA, Hoursworked_3))
+quarter3_analysis_data$hours_normalized<-scale(quarter3_analysis_data$Hoursworked_3,scale = TRUE,center = TRUE)[,1]
+
+
+q4_hdd_data_cleaned <- clean_outliers(quarter4_complete_phq_participants, "Hoursduty_4")
+quarter4_analysis_data <- quarter4_analysis_data %>% mutate(Hoursworked = ifelse(Hoursworked_4 > 168, NA, Hoursworked_4))
+quarter4_analysis_data$hours_normalized<-scale(quarter4_analysis_data$Hoursworked_4,scale = TRUE,center = TRUE)[,1]
+
+
+##2. Data Imputation
+baseline_data_imputation_method <- make.method(baseline_analysis_data)
+q1_data_imputation<-make.method(quarter1_analysis_data)
+q2_data_imputation<-make.method(quarter2_analysis_data)
+q3_data_imputation<-make.method(quarter3_analysis_data)
+q4_data_imputation<-make.method(quarter4_analysis_data)
+
+
+baseline_imputed_data_results <- mice(baseline_analysis_data, method = baseline_data_imputation_method, m = 1, seed = 6082023)
+baseline_imputed_data<-complete(baseline_imputed_data_results, 1)
+
+baseline_imputed_data$Discrimination[baseline_imputed_data$Discrimination == 2] <- 0
+
+baseline_imputed_data$Majorerror[baseline_imputed_data$Majorerror == 2] <- 0
+baseline_imputed_data$Treatment[baseline_imputed_data$Treatment == 2] <- 0
+baseline_imputed_data$participantidentifier<-factor(baseline_imputed_data$participantidentifier)
+baseline_imputed_data$Cadre[baseline_imputed_data$Cadre>2 & baseline_imputed_data$Cadre<=13]<-3
+baseline_imputed_data$Marital[baseline_imputed_data$Marital==1 | baseline_imputed_data$Marital==5]<-0
+baseline_imputed_data$Marital[baseline_imputed_data$Marital==2 | baseline_imputed_data$Marital==3| baseline_imputed_data$Marital==4]<-1
+
+
+baseline_imputed_data$Gender=factor(baseline_imputed_data$Gender,levels = c(0,1),labels = c("Male","Female"))
+
+baseline_imputed_data$Cadre=factor(baseline_imputed_data$Cadre,levels = c(1,2,3),
+                                   labels = c("Doctor","Nurse","Other cadre"))
+baseline_imputed_data$Marital=factor(baseline_imputed_data$Marital,levels = c(0,1), labels = c("Not in a committed relationship","In a committed Relationship"))
+
+
+baseline_imputed_data$Discrimination <- factor(baseline_imputed_data$Discrimination, levels = c(0, 1),labels = c("No", "Yes"))
+baseline_imputed_data$Majorerror <- factor(baseline_imputed_data$Majorerror, levels = c(0, 1),labels = c("No", "Yes"))
+baseline_imputed_data$Treatment <- factor(baseline_imputed_data$Treatment, levels = c(0, 1),labels = c("No", "Yes"))
+
+q1_imputed_data_results <- mice(quarter1_analysis_data, method = q1_data_imputation, m = 1, seed = 6082023)
+q1_imputed_data<-complete(q1_imputed_data_results, 1)
+q1_imputed_data$Discrimination_1[q1_imputed_data$Discrimination_1 == 2] <- 0
+q1_imputed_data$Majorerror_1[q1_imputed_data$Majorerror_1 == 2] <- 0
+q1_imputed_data$Treatment_1[q1_imputed_data$Treatment_1 == 2] <- 0
+q1_imputed_data$participantidentifier<-factor(q1_imputed_data$participantidentifier)
+q1_imputed_data$Discrimination_1 <- factor(q1_imputed_data$Discrimination_1, levels = c(0, 1),labels = c("No", "Yes"))
+q1_imputed_data$Majorerror_1 <- factor(q1_imputed_data$Majorerror_1, levels = c(0, 1),labels = c("No", "Yes"))
+q1_imputed_data$Treatment_1 <- factor(q1_imputed_data$Treatment_1, levels = c(0, 1),labels = c("No", "Yes"))
+
+q2_imputed_data_results <- mice(quarter2_analysis_data, method = q2_data_imputation, m = 1, seed = 6082023)
+q2_imputed_data<-complete(q2_imputed_data_results, 1)
+q2_imputed_data$Discrimination_2[q2_imputed_data$Discrimination_2 == 2] <- 0
+q2_imputed_data$Majorerror_2[q2_imputed_data$Majorerror_2 == 2] <- 0
+q2_imputed_data$Treatment_2[q2_imputed_data$Treatment_2 == 2] <- 0
+q2_imputed_data$participantidentifier<-factor(q2_imputed_data$participantidentifier)
+q2_imputed_data$Discrimination_2 <- factor(q2_imputed_data$Discrimination_2, levels = c(0, 1),labels = c("No", "Yes"))
+q2_imputed_data$Majorerror_2 <- factor(q2_imputed_data$Majorerror_2, levels = c(0, 1),labels = c("No", "Yes"))
+q2_imputed_data$Treatment_2 <- factor(q2_imputed_data$Treatment_2, levels = c(0, 1),labels = c("No", "Yes"))
+
+q3_imputed_data_results <- mice(quarter3_analysis_data, method = q3_data_imputation, m = 1, seed = 6082023)
+q3_imputed_data<-complete(q3_imputed_data_results, 1)
+q3_imputed_data$Discrimination_3[q3_imputed_data$Discrimination_3 == 2] <- 0
+q3_imputed_data$Majorerror_3[q3_imputed_data$Majorerror_3 == 2] <- 0
+q3_imputed_data$Treatment_3[q3_imputed_data$Treatment_3 == 2] <- 0
+q3_imputed_data$participantidentifier<-factor(q3_imputed_data$participantidentifier)
+q3_imputed_data$Discrimination_3 <- factor(q3_imputed_data$Discrimination_3, levels = c(0, 1),labels = c("No", "Yes"))
+q3_imputed_data$Majorerror_3 <- factor(q3_imputed_data$Majorerror_3, levels = c(0, 1),labels = c("No", "Yes"))
+q3_imputed_data$Treatment_3 <- factor(q3_imputed_data$Treatment_3, levels = c(0, 1),labels = c("No", "Yes"))
+
+
+q4_imputed_data_results <- mice(quarter4_analysis_data, method = q4_data_imputation, m = 1, seed = 6082023)
+q4_imputed_data<-complete(q4_imputed_data_results, 1)
+q4_imputed_data$Discrimination_4[q4_imputed_data$Discrimination_4 == 2] <- 0
+q4_imputed_data$Majorerror_4[q4_imputed_data$Majorerror_4 == 2] <- 0
+q4_imputed_data$Treatment_4[q4_imputed_data$Treatment_4 == 2] <- 0
+q4_imputed_data$participantidentifier<-factor(q4_imputed_data$participantidentifier)
+q4_imputed_data$Discrimination_4 <- factor(q4_imputed_data$Discrimination_4, levels = c(0, 1),labels = c("No", "Yes"))
+q4_imputed_data$Majorerror_4 <- factor(q4_imputed_data$Majorerror_4, levels = c(0, 1),labels = c("No", "Yes"))
+q4_imputed_data$Treatment_4 <- factor(q4_imputed_data$Treatment_4, levels = c(0, 1),labels = c("No", "Yes"))
+
+
+
+####Dropout correlation analysis
+rename_with_prefix <- function(df, prefix) {
+  df %>%
+    rename_with(~ paste0(prefix, ".", .), -participantidentifier)
+}
+
+t0_phq <-baseline_imputed_data %>% select(participantidentifier,phq_score,phq_category) %>%rename_with_prefix("t0_phq")
+t1_phq<-q1_imputed_data%>% select(participantidentifier,phq_score,phq_category) %>%  rename_with_prefix("t1_phq")
+t2_phq<-q2_imputed_data%>% select(participantidentifier,phq_score,phq_category) %>%  rename_with_prefix("t2_phq")
+t3_phq<-q3_imputed_data%>% select(participantidentifier,phq_score,phq_category) %>%  rename_with_prefix("t3_phq")
+t4_phq<-q4_imputed_data%>% select(participantidentifier,phq_score,phq_category) %>%  rename_with_prefix("t4_phq")
+
+correlation_data_list <-list(t0_phq,t1_phq,t2_phq,t3_phq,t4_phq)
+dropout_phq_correlation_test_data <-reduce(correlation_data_list,full_join, by ='participantidentifier')
+
+dropout_corr_df.imp <- dropout_phq_correlation_test_data %>%
+  mutate(
+    dropout_t1 = ifelse(is.na(t1_phq.phq_score) & !is.na(t0_phq.phq_score), 1, 0),
+    dropout_t2 = ifelse(is.na(t2_phq.phq_score) & !is.na(t1_phq.phq_score), 1, 0),
+    dropout_t3 = ifelse(is.na(t3_phq.phq_score) & !is.na(t2_phq.phq_score), 1, 0),
+    dropout_t4 = ifelse(is.na(t4_phq.phq_score) & !is.na(t3_phq.phq_score), 1, 0),
+    
+    dropout_t1 = ifelse(is.na(t1_phq.phq_score) & is.na(t0_phq.phq_score), 0, dropout_t1),
+    dropout_t2 = ifelse(is.na(t2_phq.phq_score) & is.na(t1_phq.phq_score), 0, dropout_t2),
+    dropout_t3 = ifelse(is.na(t3_phq.phq_score) & is.na(t2_phq.phq_score), 0, dropout_t3),
+    dropout_t4 = ifelse(is.na(t4_phq.phq_score) & is.na(t3_phq.phq_score), 0, dropout_t4),
+    
+    dropout_all = ifelse(rowSums(!is.na(select(., t1_phq.phq_score, t2_phq.phq_score, t3_phq.phq_score, t4_phq.phq_score))) > 0, 1, 0)
+  )
+
+dropout_summary <- dropout_corr_df.imp %>%
+  summarise(across(starts_with("dropout"), mean, na.rm = TRUE))
+
+compute_logistic_results <- function(formula, data) {
+  model <- glm(formula, data = data, family = binomial)
+  coefficients_summary <- summary(model)$coefficients
+  odds_ratios <- exp(coefficients_summary[, "Estimate"])
+  conf_int <- exp(confint(model))  
+  
+  results <- data.frame(
+    Variable = rownames(coefficients_summary),
+    Coefficient = coefficients_summary[, "Estimate"],
+    OR = odds_ratios,
+    `Lower 95% CI` = conf_int[, 1],
+    `Upper 95% CI` = conf_int[, 2],
+    `P-value` = format.pval(coefficients_summary[, "Pr(>|z|)"], digits = 4, eps = 1e-4)  
+  )
+  
+  return(results)
+}
+t0_formulas <- list(
+  t1_dropout = dropout_t1 ~ t0_phq.phq_score,
+  t2_dropout = dropout_t2 ~ t0_phq.phq_score,
+  t3_dropout = dropout_t3 ~ t0_phq.phq_score,
+  t4_dropout = dropout_t4 ~ t0_phq.phq_score,
+  dropout_all =dropout_all~ t0_phq.phq_score
+)
+
+logistic_results <- lapply(t0_formulas, compute_logistic_results, data = dropout_corr_df.imp)
+
+names(logistic_results) <- names(t0_formulas)
+logistic_results
+
+
+#### Attrition Weighting
+attrition_dataset.imp<-dropout_corr_df.imp %>% inner_join(baseline_imputed_data, by='participantidentifier')%>%
+  select('participantidentifier','t0_phq.phq_score','phq_category','Gender','Cadre','Age','Marital','Children','efe_score','Hoursworked',
+         'neuroticsm_score','Discrimination','Majorerror','Experience','SLE','dropout_all')
+
+ps_data=as.data.frame(attrition_dataset.imp)
+pscore <- ps(dropout_all ~ Age+neuroticsm_score,data = ps_data,estimand = "ATE",verbose = F)
+bal.table(pscore)
+ps_data$attrweight <- get.weights(pscore,stop.method = 'es.mean')
+summary(ps_data$attrweight)
+
+quantile(ps_data$attrweight, .99) 
+ps_data$attrweight.trim=ifelse(ps_data$attrweight>quantile(ps_data$attrweight, .99),quantile(ps_data$attrweight, .99),ps_data$attrweight) # trimming: exclude extreme values
+ps_data$new_weight <- ps_data$attrweight * (length(ps_data$participantidentifier) / sum(ps_data$attrweight, na.rm = TRUE))
+
+#### Logistic Regression vs Demo for PS Score
+compute_logistic_results_demo <- function(formula, data) {
+  model <- glm(formula, data = data, family = binomial)
+  coefficients_summary <- summary(model)$coefficients
+  odds_ratios <- exp(coefficients_summary[, "Estimate"])
+  conf_int <- exp(confint(model))  
+  
+  results <- data.frame(
+    Variable = rownames(coefficients_summary),
+    Coefficient = coefficients_summary[, "Estimate"],
+    OR = odds_ratios,
+    `Lower 95% CI` = conf_int[, 1],
+    `Upper 95% CI` = conf_int[, 2],
+    `P-value` = format.pval(coefficients_summary[, "Pr(>|z|)"], digits = 4, eps = 1e-4)  
+  )
+  
+  return(results)
+}
+t0_formulas <- list(
+  dropout_all =dropout_all~ Age+Gender+neuroticsm_score
+)
+
+demo_logistic_results <- lapply(t0_formulas, compute_logistic_results_demo, data = attrition_dataset.imp)
+
+names(demo_logistic_results) <- names(t0_formulas)
+demo_logistic_results
+
+###Unweighted Demographics data summary
+demo_unweighted<-attrition_dataset.imp %>% 
+  select(participantidentifier, Age, Gender, Cadre, Marital,neuroticsm_score,Children,efe_score,Hoursworked,Discrimination,Majorerror,Experience,SLE) %>%
+  distinct()
+
+unweighted_demo_descriptives <- CreateTableOne(
+  vars = c('Age','Gender','Cadre','Marital','neuroticsm_score','efe_score','Hoursworked','Discrimination','Majorerror','Experience','SLE','Children'),
+  data = demo_unweighted,
+  factorVars = c('Gender','Cadre','Marital','Discrimination','Majorerror','SLE')
+  #includeNA = TRUE
+)
+demo_unweighted_table<-print(unweighted_demo_descriptives, showAllLevels = TRUE)
+
+####Weighted data Demographics Summary
+demo_weighted <- ps_data %>% 
+  select(participantidentifier, Age, Gender, Cadre, Marital,Children,neuroticsm_score,efe_score,Hoursworked,Discrimination,Majorerror,Experience,SLE,new_weight) %>%
+  distinct()
+
+demo_svy <- svydesign(ids = ~1, data = demo_weighted, weights = ~new_weight)
+
+numeric_vars <- names(demo_weighted)[sapply(demo_weighted, is.numeric)]
+categorical_vars <- names(demo_weighted)[sapply(demo_weighted, is.factor) | sapply(demo_weighted, is.character)]
+categorical_vars <- categorical_vars[categorical_vars != "participantidentifier"]
+
+total_weighted_n <- sum(weights(demo_svy))
+cat("Total N (weighted):", round(total_weighted_n, 2), "\n")
+
+cat("\nWeighted Summary: Numeric Variables\n")
+for (var in numeric_vars) {
+  if (var != "new_weight") {  # Skip the weight column
+    cat("\n", var, "\n")
+    mean_result <- svymean(as.formula(paste0("~", var)), demo_svy, na.rm = TRUE)
+    mean_val <- coef(mean_result)
+    se_val <- SE(mean_result)
+    sd_val <- se_val * sqrt(total_weighted_n)
+    cat("Mean:", round(mean_val, 2), "\n")
+    cat("Standard Deviation (approx):", round(sd_val, 2), "\n")
+  }
+}
+
+# Weighted summary: Categorical variables
+cat("\nWeighted Summary: Categorical Variables\n")
+for (var in categorical_vars) {
+  cat("\n", var, "\n")
+  
+  weighted_tab <- svytable(as.formula(paste0("~", var)), design = demo_svy)
+  df_tab <- as.data.frame(weighted_tab)
+  df_tab$Percentage <- round(100 * df_tab$Freq / total_weighted_n, 2)
+  colnames(df_tab) <- c("Category", "Weighted_Count", "Weighted_Percentage")
+  
+  print(df_tab)
+}
+
+
+###PHQ Point prevalence
+t0_phq_prevalence_data<-merge(t0_phq ,demo_weighted, by='participantidentifier', all.x = TRUE)%>%
+  select(-Age,-Marital,-Children,-Gender,-efe_score,-Cadre,-neuroticsm_score) %>%
+  mutate(across(contains("phq_category"), as.factor))
+
+t0_phq_prevalence <- t0_phq_prevalence_data %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t0_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t0_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category = wtd.mean(t0_phq.phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t0_phq_prevalence)
+
+t1_phq_prevalence_data<-merge(t1_phq ,demo_weighted, by='participantidentifier', all.x = TRUE)%>%
+  select(-Age,-Marital,-Children,-Gender,-efe_score,-Cadre,-neuroticsm_score) %>%
+  mutate(across(contains("phq_category"), as.factor))
+
+t1_phq_prevalence <- t1_phq_prevalence_data %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t1_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t1_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category = wtd.mean(t1_phq.phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t1_phq_prevalence)
+
+t2_phq_prevalence_data<-merge(t2_phq ,demo_weighted, by='participantidentifier', all.x = TRUE)%>%
+  select(-Age,-Marital,-Children,-Gender,-efe_score,-Cadre,-neuroticsm_score) %>%
+  mutate(across(contains("phq_category"), as.factor))
+
+t2_phq_prevalence <- t2_phq_prevalence_data %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t2_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t2_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category = wtd.mean(t2_phq.phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t2_phq_prevalence)
+
+t3_phq_prevalence_data<-merge(t3_phq ,demo_weighted, by='participantidentifier', all.x = TRUE)%>%
+  select(-Age,-Marital,-Children,-Gender,-efe_score,-Cadre,-neuroticsm_score) %>%
+  mutate(across(contains("phq_category"), as.factor))
+
+t3_phq_prevalence <- t3_phq_prevalence_data %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t3_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t3_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category = wtd.mean(t3_phq.phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t3_phq_prevalence)
+
+t4_phq_prevalence_data<-merge(t4_phq ,demo_weighted, by='participantidentifier', all.x = TRUE)%>%
+  select(-Age,-Marital,-Children,-Gender,-efe_score,-Cadre,-neuroticsm_score) %>%
+  mutate(across(contains("phq_category"), as.factor))
+
+t4_phq_prevalence <- t4_phq_prevalence_data %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t4_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t4_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category = wtd.mean(t4_phq.phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t4_phq_prevalence)
+
+##By Gender
+t0_gender_data <-ps_data %>% select(participantidentifier,Gender,t0_phq.phq_score,phq_category,new_weight)
+
+t1_gender_data <-t1_phq %>% inner_join(ps_data,by ='participantidentifier')%>%
+  select(participantidentifier,Gender,t1_phq.phq_score,phq_category,new_weight)
+
+t2_gender_data <-t2_phq %>% inner_join(ps_data,by ='participantidentifier')%>%
+  select(participantidentifier,Gender,t2_phq.phq_score,phq_category,new_weight)
+
+t3_gender_data <-t3_phq %>% inner_join(ps_data,by ='participantidentifier')%>%
+  select(participantidentifier,Gender,t3_phq.phq_score,phq_category,new_weight)
+
+t4_gender_data <-t4_phq %>% inner_join(ps_data,by ='participantidentifier')%>%
+  select(participantidentifier,Gender,t4_phq.phq_score,phq_category,new_weight)
+
+t0_gender_summary_stats <- t0_gender_data %>%
+  group_by(Gender) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t0_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t0_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category_1 = wtd.mean(phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t0_gender_summary_stats)
+
+
+t1_gender_summary_stats <- t1_gender_data %>%
+  group_by(Gender) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t1_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t1_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category_1 = wtd.mean(phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t1_gender_summary_stats)
+
+
+t2_gender_summary_stats <- t2_gender_data %>%
+  group_by(Gender) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t2_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t2_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category_1 = wtd.mean(phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t2_gender_summary_stats)
+
+
+t3_gender_summary_stats <- t3_gender_data %>%
+  group_by(Gender) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t3_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t3_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category_1 = wtd.mean(phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t3_gender_summary_stats)
+
+t4_gender_summary_stats <- t4_gender_data %>%
+  group_by(Gender) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t4_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t4_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category_1 = wtd.mean(phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t4_gender_summary_stats)
+
+###T tests to evaluate significance of PHQ score ~ Gender
+gender_data_list <- list(
+  t0 = t0_gender_data,
+  t1 = t1_gender_data,
+  t2 = t2_gender_data,
+  t3 = t3_gender_data,
+  t4 = t4_gender_data
+)
+phq_vars <- c(
+  t0 = "t0_phq.phq_score",
+  t1 = "t1_phq.phq_score",
+  t2 = "t2_phq.phq_score",
+  t3 = "t3_phq.phq_score",
+  t4 = "t4_phq.phq_score"
+)
+
+run_weighted_ttest <- function(data, varname, label) {
+  design <- svydesign(ids = ~1, data = data, weights = ~new_weight)
+  formula <- as.formula(paste(varname, "~ Gender"))
+  result <- svyttest(formula, design = design)
+  
+  tibble(
+    Timepoint = label,
+    t_statistic = round(result$statistic, 3),
+    df = round(result$parameter, 1),
+    p_value = round(result$p.value, 4)
+  )
+}
+
+weighted_ttest_results <- imap_dfr(phq_vars, function(var, label) {
+  run_weighted_ttest(gender_data_list[[label]], var, label)
+})
+
+print(weighted_ttest_results)
+
+#### Chi-Square Tests for PHQ Category ~ Gender
+gender_weighted_chisq <- function(data, label) {
+  design <- svydesign(ids = ~1, data = data, weights = ~new_weight)
+  result <- svychisq(~Gender + phq_category, design = design)
+  
+  tibble(
+    Timepoint = label,
+    statistic = round(result$statistic, 3),
+    df_num = result$parameter[1],
+    df_den = result$parameter[2],
+    p_value = round(result$p.value, 4)
+  )
+}
+gender_chisq_results <- imap_dfr(gender_data_list, gender_weighted_chisq)
+print("Weighted Chi-Square Test Results by Timepoint:")
+print(gender_chisq_results)
+
+## By Cadre
+
+t0_Cadre_data <-ps_data %>% select(participantidentifier,Cadre,t0_phq.phq_score,phq_category,Hoursworked,new_weight)
+
+t1_Cadre_data <-t1_phq %>% inner_join(ps_data,by ='participantidentifier')%>%
+  select(participantidentifier,Cadre,t1_phq.phq_score,phq_category,Hoursworked,new_weight)
+
+t2_Cadre_data <-t2_phq %>% inner_join(ps_data,by ='participantidentifier')%>%
+  select(participantidentifier,Cadre,t2_phq.phq_score,phq_category,Hoursworked,new_weight)
+
+t3_Cadre_data <-t3_phq %>% inner_join(ps_data,by ='participantidentifier')%>%
+  select(participantidentifier,Cadre,t3_phq.phq_score,phq_category,Hoursworked,new_weight)
+
+t4_Cadre_data <-t4_phq %>% inner_join(ps_data,by ='participantidentifier')%>%
+  select(participantidentifier,Cadre,t4_phq.phq_score,phq_category,Hoursworked,new_weight)
+
+### Cadre PHQ Summaries
+t0_Cadre_summary_stats <- t0_Cadre_data %>%
+  group_by(Cadre) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t0_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t0_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category_1 = wtd.mean(phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t0_Cadre_summary_stats)
+
+
+t1_Cadre_summary_stats <- t1_Cadre_data %>%
+  group_by(Cadre) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t1_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t1_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category_1 = wtd.mean(phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t1_Cadre_summary_stats)
+
+
+t2_Cadre_summary_stats <- t2_Cadre_data %>%
+  group_by(Cadre) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t2_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t2_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category_1 = wtd.mean(phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t2_Cadre_summary_stats)
+
+
+t3_Cadre_summary_stats <- t3_Cadre_data %>%
+  group_by(Cadre) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t3_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t3_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category_1 = wtd.mean(phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t3_Cadre_summary_stats)
+
+t4_Cadre_summary_stats <- t4_Cadre_data %>%
+  group_by(Cadre) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(t4_phq.phq_score, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(t4_phq.phq_score, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category_1 = wtd.mean(phq_category == 1, weights = new_weight, na.rm = TRUE) * 100
+  )
+
+print(t4_Cadre_summary_stats)
+
+### Anova analysis for PHQ_Score ~ Cadre
+cadre_data_list <- list(
+  t0 = t0_Cadre_data,
+  t1 = t1_Cadre_data,
+  t2 = t2_Cadre_data,
+  t3 = t3_Cadre_data,
+  t4 = t4_Cadre_data
+) %>%
+  map(~ .x %>%
+        rename(phq_score = matches("phq_score"))  # rename any column that includes 'phq_score'
+  )
+
+run_weighted_anova <- function(data, label) {
+  design <- svydesign(ids = ~1, data = data, weights = ~new_weight)
+  model <- svyglm(phq_score ~ Cadre, design = design)
+  cat("\nWeighted ANOVA Result for", label, ":\n")
+  print(summary(model))
+}
+walk2(cadre_data_list, names(cadre_data_list), run_weighted_anova)
+extract_anova_summary <- function(data, label) {
+  design <- svydesign(ids = ~1, data = data, weights = ~new_weight)
+  model <- svyglm(phq_score ~ Cadre, design = design)
+  model_summary <- summary(model)
+  tibble(
+    Timepoint = label,
+    F_statistic = round(model_summary$coefficients[2, "t value"]^2, 3),  # approximate
+    p_value = round(model_summary$coefficients[2, "Pr(>|t|)"], 4)
+  )
+}
+anova_results <- imap_dfr(cadre_data_list, extract_anova_summary)
+print(anova_results)
+
+### Chi-Square test for PHQ_Category ~ Cadre
+cadre_weighted_chisq <- function(data, label) {
+  design <- svydesign(ids = ~1, data = data, weights = ~new_weight)
+  result <- svychisq(~Cadre + phq_category, design = design)
+  
+  tibble(
+    Timepoint = label,
+    statistic = round(result$statistic, 3),
+    df_num = result$parameter[1],
+    df_den = result$parameter[2],
+    p_value = round(result$p.value, 4)
+  )
+}
+chisq_results <- imap_dfr(cadre_data_list, cadre_weighted_chisq)
+print("Weighted Chi-Square Test Results by Timepoint:")
+print(chisq_results)
+
+### Cadre ~ Hours Duty Summaries
+t0_Cadre__hours_summary_stats <- t0_Cadre_data %>%
+  group_by(Cadre) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(Hoursworked, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(Hoursworked, weights = new_weight, na.rm = TRUE))
+  )
+print(t0_Cadre__hours_summary_stats)
+
+
+t1_Cadre__hours_summary_stats <- t1_Cadre_data %>%
+  group_by(Cadre) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(Hoursworked, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(Hoursworked, weights = new_weight, na.rm = TRUE))
+  )
+print(t1_Cadre__hours_summary_stats)
+
+
+t2_Cadre__hours_summary_stats <- t2_Cadre_data %>%
+  group_by(Cadre) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(Hoursworked, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(Hoursworked, weights = new_weight, na.rm = TRUE))
+  )
+print(t2_Cadre__hours_summary_stats)
+
+
+t3_Cadre__hours_summary_stats <- t3_Cadre_data %>%
+  group_by(Cadre) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(Hoursworked, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(Hoursworked, weights = new_weight, na.rm = TRUE))
+  )
+print(t3_Cadre__hours_summary_stats)
+
+t4_Cadre__hours_summary_stats <- t4_Cadre_data %>%
+  group_by(Cadre) %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(Hoursworked, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(Hoursworked, weights = new_weight, na.rm = TRUE))
+  )
+print(t4_Cadre__hours_summary_stats)
+
+
+
+####Demo Vars Correlation
+##Pearson Correlation
+pearson_corr_data_phqavg.imp<- dropout_phq_correlation_test_data %>%
+  select(participantidentifier,t0_phq.phq_score,t1_phq.phq_score,t2_phq.phq_score,t3_phq.phq_score,t4_phq.phq_score)%>%
+  rowwise() %>%
+  mutate(phq_avg = mean(c_across(starts_with("t")), na.rm = TRUE)) %>%
+  ungroup()
+
+pearson_corr_data_demo_phqavg.imp <-ps_data%>% inner_join(pearson_corr_data_phqavg.imp, by='participantidentifier')%>%
+  select(participantidentifier,Age,Cadre,Gender,Marital,Children,Experience,neuroticsm_score,efe_score,phq_avg,new_weight) 
+
+dependent_cols_data.imp <- pearson_corr_data_demo_phqavg.imp %>%
+  select(Age, neuroticsm_score, efe_score, Gender, Cadre, Children, Marital,Experience) %>% mutate(across(everything(), as.numeric))
+weights=pearson_corr_data_demo_phqavg.imp$new_weight
+
+pearson_phq_avg_scores.imp<- pearson_corr_data_demo_phqavg.imp %>%select(phq_avg)
+
+pairs <- expand.grid(var = names(dependent_cols_data.imp), phq_var = names(pearson_phq_avg_scores.imp))
+compute_cor <- function(var, phq_col) {
+  x <- dependent_cols_data.imp[[var]]
+  y <- pearson_phq_avg_scores.imp[[phq_col]]
+  
+  if (all(is.na(x)) || all(is.na(y)) || all(is.na(weights))) {
+    cat("Skipping due to all NA in:", var, "\n")
+    return(tibble(
+      variable = var,
+      phq_var = phq_col,
+      test_type = "Pearson Correlation",
+      statistic = NA,
+      p_value = NA
+    ))
+  }
+  
+  test_result <- tryCatch({
+    wtd.cor(x, y, weight = weights, bootse = TRUE)
+  }, error = function(e) {
+    cat("Error in", var, ":", e$message, "\n")
+    return(NULL)
+  })
+  
+  if (is.null(test_result)) {
+    return(tibble(
+      variable = var,
+      phq_var = phq_col,
+      test_type = "Pearson Correlation",
+      statistic = NA,
+      p_value = NA
+    ))
+  }
+  
+  statistic_value <- test_result[1, "correlation"]
+  p_value_value <- test_result[1, "p.value"]
+  
+  formatted_p_value <- ifelse(p_value_value < 0.001, "<0.001", format(round(p_value_value, 4), nsmall = 4))
+  
+  tibble(
+    variable = var,
+    phq_var = phq_col,
+    test_type = "Pearson Correlation",
+    statistic = round(statistic_value, 4),
+    p_value = as.character(formatted_p_value)
+  )
+}
+cor_results <- map2_dfr(pairs$var, pairs$phq_var, compute_cor)
+print(cor_results)
+
+###Phq AVg prevalence
+phq_avg_prevalence_data<-ps_data%>% inner_join(pearson_corr_data_phqavg.imp, by='participantidentifier')%>%
+  select(participantidentifier,phq_avg,new_weight)
+
+
+phq_avg_prevalence_data$phq_avg_cat_above10 <- ifelse(is.na(phq_avg_prevalence_data$phq_avg), NA,ifelse(phq_avg_prevalence_data$phq_avg >= 10, 1, 0))
+phq_avg_prevalence_data$phq_avg_cat_above15 <- ifelse(is.na(phq_avg_prevalence_data$phq_avg), NA,ifelse(phq_avg_prevalence_data$phq_avg >= 15, 1, 0))
+phq_avg_prevalence_data$phq_avg_cat_above20 <- ifelse(is.na(phq_avg_prevalence_data$phq_avg), NA,ifelse(phq_avg_prevalence_data$phq_avg >= 20, 1, 0))
+
+
+phq_avg_prevalence_data_above10_data<-phq_avg_prevalence_data %>% select(participantidentifier,phq_avg,phq_avg_cat_above10,new_weight)
+phq_avg_prevalence_data_above15_data<-phq_avg_prevalence_data %>% select(participantidentifier,phq_avg,phq_avg_cat_above15,new_weight)
+phq_avg_prevalence_data_above20_data<-phq_avg_prevalence_data %>% select(participantidentifier,phq_avg,phq_avg_cat_above20,new_weight)
+
+
+
+phq_avg_above10_prevalence <- phq_avg_prevalence_data_above10_data %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(phq_avg, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(phq_avg, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category = wtd.mean(phq_avg_cat_above10 == 1, weights = new_weight, na.rm = TRUE) * 100,
+    n_above10 = sum(new_weight[phq_avg_cat_above10 == 1], na.rm = TRUE)
+  )
+print(phq_avg_above10_prevalence)
+
+phq_avg_above15_prevalence <- phq_avg_prevalence_data_above15_data %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(phq_avg, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(phq_avg, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category = wtd.mean(phq_avg_cat_above15 == 1, weights = new_weight, na.rm = TRUE) * 100,
+    n_above15 = sum(new_weight[phq_avg_cat_above15 == 1], na.rm = TRUE)
+  )
+print(phq_avg_above15_prevalence)
+
+phq_avg_above20_prevalence <- phq_avg_prevalence_data_above20_data %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Mean_PHQ = wtd.mean(phq_avg, weights = new_weight, na.rm = TRUE),
+    STDDEV_PHQ = sqrt(wtd.var(phq_avg, weights = new_weight, na.rm = TRUE)),
+    Percent_PHQ_Category = wtd.mean(phq_avg_cat_above20 == 1, weights = new_weight, na.rm = TRUE) * 100,
+    n_above20 = sum(new_weight[phq_avg_cat_above20 == 1], na.rm = TRUE)
+  )
+print(phq_avg_above20_prevalence)
+
+
+
+###PHQ_Proportion Lukoye Comment---If anyone has a phqtot>10 as 1 else 0
+phq_all_prevalence<-ps_data%>% inner_join(pearson_corr_data_phqavg.imp, by='participantidentifier')%>%
+  select(participantidentifier,t0_phq.phq_score.x,t1_phq.phq_score,t2_phq.phq_score,t3_phq.phq_score,t4_phq.phq_score,new_weight) %>%
+  rename(t0_phq.phq_score=t0_phq.phq_score.x) %>%
+  mutate(any_phq10_plus = if_any(
+    .cols = starts_with("t"), 
+    .fns = ~ !is.na(.) & . >= 10
+  ) * 1)
+
+
+phq_all_prevalence <- phq_all_prevalence %>%
+  mutate(
+    phq_all_cat_above10 = if_any(starts_with("t"), ~ .x >= 10 & !is.na(.x)) * 1,
+    phq_all_cat_above15 = if_any(starts_with("t"), ~ .x >= 15 & !is.na(.x)) * 1,
+    phq_all_cat_above20 = if_any(starts_with("t"), ~ .x >= 20 & !is.na(.x)) * 1
+  )
+
+phq_all_prevalence_above10_data <- phq_all_prevalence %>%
+  select(participantidentifier, phq_all_cat_above10, phq_all_cat_above10, new_weight)
+
+phq_all_prevalence_above15_data <- phq_all_prevalence %>%
+  select(participantidentifier, phq_all_cat_above15, phq_all_cat_above15, new_weight)
+
+phq_all_prevalence_above20_data <- phq_all_prevalence %>%
+  select(participantidentifier, phq_all_cat_above20, phq_all_cat_above20, new_weight)
+
+
+
+
+
+phq_all_above10_prevalence <- phq_all_prevalence_above10_data %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Percent_PHQ_Category = wtd.mean(phq_all_cat_above10 == 1, weights = new_weight, na.rm = TRUE) * 100,
+    n_above10 = sum(new_weight[phq_all_cat_above10 == 1], na.rm = TRUE)
+  )
+print(phq_all_above10_prevalence)
+
+phq_all_above15_prevalence <- phq_all_prevalence_above15_data %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Percent_PHQ_Category = wtd.mean(phq_all_cat_above15 == 1, weights = new_weight, na.rm = TRUE) * 100,
+    n_above15 = sum(new_weight[phq_all_cat_above15 == 1], na.rm = TRUE)
+  )
+print(phq_all_above15_prevalence)
+
+phq_all_above20_prevalence <- phq_all_prevalence_above20_data %>%
+  summarise(
+    N = sum(new_weight, na.rm = TRUE),
+    Percent_PHQ_Category = wtd.mean(phq_all_cat_above20 == 1, weights = new_weight, na.rm = TRUE) * 100,
+    n_above20 = sum(new_weight[phq_all_cat_above20 == 1], na.rm = TRUE)
+  )
+print(phq_all_above20_prevalence)
+
+#### STEP-WISE REGRESSION MODEL
+stepwise_reg_data.imp<-pearson_corr_data_demo_phqavg.imp %>% 
+  rowwise() %>%
+  mutate(phq_category = ifelse(is.na(phq_avg), NA, 
+                               ifelse(phq_avg >= 10, 1, 0))) %>% 
+  ungroup()
+
+stepwise_reg_data_clean.imp<-stepwise_reg_data.imp %>% dplyr::select(participantidentifier,Age,Gender,Marital,neuroticsm_score,Experience,efe_score,new_weight,phq_avg) %>%
+  na.omit()
+
+age_initial_reg_model.imp<-lm(phq_avg ~Age+ Gender+Marital+neuroticsm_score+efe_score+Experience,weights = new_weight, data = stepwise_reg_data_clean.imp)
+#initial_reg_model.imp<-lm(phq_avg ~Gender+Marital+neuroticsm_score+efe_score,weights = weights,  data = stepwise_reg_data_clean.imp)
+summary(age_initial_reg_model.imp)
+#summary(initial_reg_model.imp)
+
+stepwise_reg_model.imp<-step(age_initial_reg_model.imp, direction = "both")
+summary(stepwise_reg_model.imp)
+
+
+#### GEE Model
+gee_t0_data.imp<-baseline_imputed_data %>% 
+  select(participantidentifier,Discrimination,Majorerror,Treatment,Hoursworked,SLE,phq_score) %>% mutate(time = 0)
+
+gee_t1_data.imp<-q1_imputed_data %>% 
+  select(participantidentifier,Discrimination_1,Majorerror_1,Treatment_1,Hoursworked_1,SLE,phq_score)%>%
+  rename_with(~ str_remove(.x, "_1")) %>%
+  mutate(time = 1)
+
+gee_t2_data.imp<-q2_imputed_data %>% 
+  select(participantidentifier,Discrimination_2,Majorerror_2,Treatment_2,Hoursworked_2,SLE,phq_score)%>%
+  rename_with(~ str_remove(.x, "_2")) %>%
+  mutate(time = 2)
+
+gee_t3_data.imp<-q3_imputed_data %>% 
+  select(participantidentifier,Discrimination_3,Majorerror_3,Treatment_3,Hoursworked_3,SLE,phq_score)%>%
+  rename_with(~ str_remove(.x, "_3")) %>%
+  mutate(time = 3)
+
+gee_t4_data.imp<-q4_imputed_data %>%
+  select(participantidentifier,Discrimination_4,Majorerror_4,Treatment_4,Hoursworked_4,SLE,phq_score)%>%
+  rename_with(~ str_remove(.x, "_4")) %>%
+  mutate(time = 4)
+
+gee_t0_t4_data.imp<- bind_rows(gee_t0_data.imp, gee_t1_data.imp, gee_t2_data.imp, gee_t3_data.imp, gee_t4_data.imp) %>%
+  arrange(participantidentifier, time)
+
+#gee_sle_full_data.imp<-gee_t0_t4_data.imp %>% left_join(sle_imputed_data,by=c('participantidentifier','time'))
+
+attrition_weights_df<-ps_data[,c("participantidentifier","Gender","Cadre","Age","Marital","Children","Experience","efe_score","neuroticsm_score","dropout_all","attrweight" ,"new_weight" )]
+gee_data_weighted.imp<-merge(gee_t0_t4_data.imp ,attrition_weights_df, by='participantidentifier', all.x = TRUE)
+
+###GEE Data preprocessing
+
+gee_data_weighted.imp$participantidentifier<-factor(gee_data_weighted.imp$participantidentifier)
+
+gee_data_weighted.imp$Hours_normalized<-scale(gee_data_weighted.imp$Hoursworked,scale = TRUE,center = TRUE)[,1]
+gee_data_weighted.imp$Experience_normalized<-scale(gee_data_weighted.imp$Experience,scale = TRUE,center = TRUE)[,1]
+
+#gee_data_weighted.imp$Cadre <- relevel(gee_data_weighted.imp$Cadre, ref = "Other cadre")
+###GEE MODEL
+gee_model_weighted <- geeglm(
+  phq_score ~ Discrimination +Gender+ Majorerror  + SLE+ Hours_normalized +Cadre+Experience_normalized+
+    Age + neuroticsm_score + efe_score + Marital ,
+  id = participantidentifier,  
+  data = gee_data_weighted.imp,
+  family = gaussian,  
+  corstr = "independence",
+  weights = new_weight
+  
+)
+summary(gee_model_weighted)
+sjPlot::tab_model(gee_model_weighted, show.obs=F, show.ngroups = F)

@@ -1,0 +1,208 @@
+---
+title: "DEPRESSION ANALYSIS IN KENYAN HCW"
+author: "Victor Karume"
+date: "2025-07-21"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,results = 'hide',fig.show = 'hide')
+```
+
+## Depression analysis in Kenyan HCW: A modular R Project.
+## Project Overview
+
+This project focuses on the analysis of depression symptoms among kenyan healthcare workers.The primary objective is to provide a clear, structured and easily navigatable codebase that will make easy the process of data ingestion, data processing, psychometric analysis and reporting.
+
+## Getting started
+To run this project in your local machine, follow the following steps.
+
+### Prerequisites
+
+* **R and RStudio:** Ensure you have the latest versions of [R](https://cran.r-project.org/) and [RStudio Desktop](https://posit.co/download/rstudio-desktop/) installed.
+* **Git:** You'll need Git installed for version control. Download it from [git-scm.com](https://git-scm.com/downloads).
+* **ODBC Driver 17 for SQL Server:** This project connects to an Azure SQL Database. You'll need the appropriate ODBC driver installed on your system. Download it from [Microsoft ODBC Driver for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server?view=sql-server-ver16).
+* **Database Credentials:** Access to the Azure SQL Database (`Uzima_db`) with appropriate permissions for your Azure Active Directory user.
+
+### 1. Clone the Repository
+
+Open your Git Bash (or Terminal) and clone this repository to your desired local directory (e.g., `C:\Users\user\Documents\UZIMA_DS\`).
+
+{bash}
+cd /c/Users/user/Documents/UZIMA_DS/
+git clone [https://github.com/your-username/Depression_Symptoms_Kenyan_HCW.git](https://github.com/your-username/Depression_Symptoms_Kenyan_HCW.git)
+
+Please replace 'your-username' with your actual username 
+
+### 2. Set Up Your Environment Variables (.Renviron)
+This project uses environment variables to securely manage database credentials, preventing them from being hardcoded or committed to version control.
+
+Navigate to the project root:
+In your file explorer, go to the local directory you cloned the repository into.
+
+Open .Renviron:
+Add your credentials: 
+Add the following lines, replacing your_azure_ad_username@yourdomain.com with your actual Azure AD username. 
+A DB_PASSWORD variable is typically not needed if Authentication = 'ActiveDirectoryInteractive' is used, as the password will be prompted interactively by Azure AD.
+
+ .Renviron
+ DB_USER="your_azure_ad_username@yourdomain.com"
+ DB_PASSWORD="your_database_password_if_not_using_AD_interactive_auth"
+
+Save the file.
+Restart RStudio: restart your RStudio session (Session > Restart R) to load these new environment variables.
+
+### 3. Install R Packages
+This project manages its R package dependencies using the 00_load_libraries.R script.
+
+Open the RStudio Project:
+From RStudio, go to File > Open Project... and navigate to C:\Users\user\Documents\UZIMA_DS\Depression_Symptoms_Kenyan_HCW\Depression_Symptoms_Kenyan_HCW.Rproj.
+
+Run the library loader script:
+This script will check for, install (if missing), and load all necessary R packages.
+```{r}
+library(here)
+```
+
+```{r load_libraries}
+source(here("R", "Setup", "Load_libraries.R"))
+```
+To check if the packages are successfully loaded,look at the Packages panel to see if the packages are ticked.
+
+### Project Structure
+The project has a modular structure where different codes are separated and sourced to ensure that there is reusability and efficiency.The structure is as follows:
+```text
+Depression_Symptoms_Kenyan_HCW/
+????????? .git/               
+????????? .gitignore            
+????????? .Renviron             
+????????? Depression_Symptoms_Kenyan_HCW.Rproj 
+????????? README.md            
+|
+????????? data/                 
+???   ????????? raw/              
+???   ????????? processed/        
+???   ????????? final/           
+???
+????????? R/                    
+???   ????????? Setup/            
+???   ???   ????????? Load_libraries.R
+???   ???   ????????? db_connection.R
+???   ????????? SQL_queries/     
+???   ???   ????????? SQL_queries_and_fetching_data.R
+???   ????????? Data_processing/   
+???   ???   ????????? Convert_column_types.R
+|   |   ????????? Process_participant_data.R
+|   |   ????????? Process_quarterly_data.R
+|   |   ????????? Process_SLE_data.R
+???   ????????? Psychometrics/
+|   |   ????????? Psychometric_assessment_vars/
+???   ???       ????????? Quarterly_psychometric_assessment_vars.R
+|   |       ????????? baseline_psychometric_ass.R
+|   |   ????????? Psychometric_tests/
+|   |       ????????? Psychometric_tests_calculation.R
+???   ????????? Data_preparation_pipeline/ 
+???   ???   ????????? Generate_analysis_data_complete_PHQ.R
+|   |   ????????? Handle_outliers.R
+|   |   ????????? Impute_data.R
+|   |   ????????? Dropout_analysis.R
+|   |   ????????? Attrition_weights.R
+???   ????????? Analysis_modules/
+|       ????????? Correlation_functions/
+|       ????????? Descriptive_statistics/
+|       ????????? Gee_modelling/
+|       ????????? Hypothesis_Testing_functions/
+|       ????????? PHQ_prevalence/
+|       ????????? Regression_modelling/
+???
+????????? analysis/            
+???   ????????? main_analysis_report.Rmd
+???
+????????? reports/              
+????????? figures/              
+????????? tables/   
+```
+## Entry Points into the Project
+
+You can interact with this project in several ways, depending on your needs:
+
+### A. Run the Entire Analysis Pipeline (Best for a for New User)
+
+The most comprehensive way to run the project is via the main R Markdown report (`.Rmd`), which orchestrates all steps from data ingestion to final analysis and report generation. This R Markdown file will `source()` the relevant R scripts.
+
+1.  **Open RStudio Project:** Ensure you have the `Depression_Symptoms_Kenyan_HCW.Rproj` project open in RStudio.
+2.  **Run the following codes**
+
+```{r Setup}
+# Setup and Load Libraries
+  library(here)
+# Load all necessary packages for the project
+  source(here("R", "Setup", "Load_libraries.R"))
+# Load database connection setup
+  source(here("R", "Setup", "db_connection.R"))
+```
+To perform data ingestion:
+```{r Data Ingestion}
+# Data Ingestion
+  source(here("R", "SQL_queries", "SQL_queries_and _fetching_data.R"))
+# This script will typically return data
+    
+```
+To perform data processing:
+```{r Data_Processing}
+# Data Processing
+source(here("R", "Data_processing", "Process_participant_data.R"))
+source(here("R", "Data_processing", "Process_quarterly_data.R"))
+source(here("R", "Data_processing", "Convert_column_types.R"))
+source(here("R", "Data_processing", "Process_SLE_data.R"))
+```
+To perform Psychometric tests and scoring:
+```{r Psychometrics}
+# Getting psychometric assessment variables 
+source(here("R", "Psychometrics", "Psychometric_assessment_vars", "baseline_psychometric_ass.R"))
+source(here("R", "Psychometrics", "Psychometric_assessment_vars", "Quarterly_psychometric_assessment_vars.R"))
+# After loading the psychometric assessment variables, perform the various calculations and scoring
+source(here("R", "Psychometrics", "Psychometric_assessment_vars", "Psychometric_tests_calc.R"))
+```
+To prepare the data for final analysis:
+```{r Data_Preparation}
+# Prepare for final data analysis
+source(here("R","Data_preparation_pipeline", "Generate_analysis_data_complete_PHQ.R"))
+source(here("R","Data_preparation_pipeline", "Handle_outliers.R"))
+source(here("R","Data_preparation_pipeline", "Impute_data.R"))
+source(here("R","Data_preparation_pipeline", "Dropout_analysis.R"))
+source(here("R","Data_preparation_pipeline", "Attrition_weights.R"))
+```
+To run the full analysis now:
+```{r Analysis}
+# Run various analysis Modules
+# Source and run correlation functions
+source(here("R","Analysis_modules", "Correlation_functions","Pearson_correlation.R"))
+source(here("R","Analysis_modules", "Correlation_functions","PHQ_Average_prevalence.R"))
+source(here("R","Analysis_modules", "Correlation_functions","Dropout_correlation_analysis.R"))
+
+#Source and run Descriptive statistics
+source(here("R","Analysis_modules", "Descriptive_statistics","Weighted_unweighted_demographic_summary.R"))
+
+#Source and run PHQ prevalence
+source(here("R","Analysis_modules", "PHQ_prevalence","Point_prevalence.R"))
+source(here("R","Analysis_modules", "PHQ_prevalence","Point_prevalence_Cadre.R"))
+source(here("R","Analysis_modules", "PHQ_prevalence","Point_prevalence_gender.R"))
+
+#Source and run Hypothesis testing functions
+source(here("R","Analysis_modules", "Hypothesis_Testing_Functions","ANOVA_analysis_PHQ_score_cadre.R"))
+source(here("R","Analysis_modules", "Hypothesis_Testing_Functions","Chi_tests_PHQ_category_cadre.R"))
+source(here("R","Analysis_modules", "Hypothesis_Testing_Functions","Ttests_significance_of_PHQ_gender.R"))
+source(here("R","Analysis_modules", "Hypothesis_Testing_Functions","Chi_tests_PHQ_category_gender.R"))
+
+#Source and run Regression models
+source(here("R","Analysis_modules", "Regression_modelling","Step_wise_regression.R"))
+
+#Source and run Gee model
+source(here("R","Analysis_modules", "Gee_modelling","Gee_model.R"))
+    
+```

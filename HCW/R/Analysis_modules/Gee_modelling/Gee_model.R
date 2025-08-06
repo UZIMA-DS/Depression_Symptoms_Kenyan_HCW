@@ -26,7 +26,7 @@ gee_t4_data.imp<-q4_imputed_data %>%
 gee_t0_t4_data.imp<- bind_rows(gee_t0_data.imp, gee_t1_data.imp, gee_t2_data.imp, gee_t3_data.imp, gee_t4_data.imp) %>%
   arrange(participantidentifier, time)
 
-gee_sle_full_data.imp<-gee_t0_t4_data.imp %>% left_join(sle_imputed_data,by=c('participantidentifier','time'))
+#gee_sle_full_data.imp<-gee_t0_t4_data.imp %>% left_join(sle_imputed_data,by=c('participantidentifier','time'))
 
 attrition_weights_df<-ps_data[,c("participantidentifier","Gender","Cadre","Age","Marital","Children","Experience","efe_score","neuroticsm_score","dropout_all","attrweight" ,"new_weight" )]
 gee_data_weighted.imp<-merge(gee_t0_t4_data.imp ,attrition_weights_df, by='participantidentifier', all.x = TRUE)
@@ -37,8 +37,8 @@ gee_data_weighted.imp$participantidentifier<-factor(gee_data_weighted.imp$partic
 
 gee_data_weighted.imp$Hours_normalized<-scale(gee_data_weighted.imp$Hoursworked,scale = TRUE,center = TRUE)[,1]
 gee_data_weighted.imp$Experience_normalized<-scale(gee_data_weighted.imp$Experience,scale = TRUE,center = TRUE)[,1]
-gee_data_weighted.imp$Cadre <- relevel(gee_data_weighted.imp$Cadre, ref = "Other cadre")
 
+#gee_data_weighted.imp$Cadre <- relevel(gee_data_weighted.imp$Cadre, ref = "Other cadre")
 ###GEE MODEL
 gee_model_weighted <- geeglm(
   phq_score ~ Discrimination +Gender+ Majorerror  + SLE+ Hours_normalized +Cadre+Experience_normalized+

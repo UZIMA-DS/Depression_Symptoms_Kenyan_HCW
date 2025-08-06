@@ -1,6 +1,6 @@
 #2.  Function to calculate the Psychometric tests 
 calculate_psychometric_assessment_score <- function(data, vars_list) {
-  #data <- list(participantidentifier = data$participantidentifier)
+  data <- list(participantidentifier = data$participantidentifier)
   
   # Calculate EFE score
   if (!is.null(vars_list$efe_vars) && all(vars_list$efe_vars %in% colnames(data)) && 

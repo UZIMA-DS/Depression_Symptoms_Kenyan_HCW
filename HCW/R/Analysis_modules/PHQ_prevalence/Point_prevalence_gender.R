@@ -71,3 +71,4 @@ t4_gender_summary_stats <- t4_gender_data %>%
   )
 
 print(t4_gender_summary_stats)
+
